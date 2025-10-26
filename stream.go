@@ -5,8 +5,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"sync"
+	"time"
 )
 
 // StreamConverter handles streaming audio conversion by keeping a SoX process alive
@@ -21,6 +23,12 @@ type StreamConverter struct {
 
 	// Optional output path (if empty, uses stdout)
 	outputPath string
+
+	// Auto-flush configuration
+	autoFlush     bool
+	flushInterval time.Duration
+	flushTicker   *time.Ticker
+	flushStopChan chan bool
 
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
@@ -63,15 +71,23 @@ func (s *StreamConverter) WithOutputPath(path string) *StreamConverter {
 	return s
 }
 
-// WithOptions sets custom conversion options
-func (s *StreamConverter) WithOptions(opts ConversionOptions) *StreamConverter {
-	s.Options = opts
-	return s
-}
-
 func (s *StreamConverter) WithAutoStart(ctx ...context.Context) *StreamConverter {
 	s.Start(ctx...)
 
+	return s
+}
+
+// WithAutoFlush enables automatic periodic flushing
+func (s *StreamConverter) WithAutoFlush(interval time.Duration) *StreamConverter {
+	s.autoFlush = true
+	s.flushInterval = interval
+
+	return s
+}
+
+// WithOptions sets custom conversion options
+func (s *StreamConverter) WithOptions(opts ConversionOptions) *StreamConverter {
+	s.Options = opts
 	return s
 }
 
@@ -115,6 +131,7 @@ func (s *StreamConverter) Start(ctx ...context.Context) error {
 		s.releasePool()
 		return fmt.Errorf("invalid input format: %w", err)
 	}
+
 	if err := s.Output.Validate(); err != nil {
 		s.releasePool()
 		return fmt.Errorf("invalid output format: %w", err)
@@ -132,13 +149,11 @@ func (s *StreamConverter) Start(ctx ...context.Context) error {
 		return fmt.Errorf("failed to create stdin pipe: %w", err)
 	}
 
-	// Only set up stdout pipe if not writing to file
-	if s.outputPath == "" {
-		s.stdout, err = s.cmd.StdoutPipe()
-		if err != nil {
-			s.releasePool()
-			return fmt.Errorf("failed to create stdout pipe: %w", err)
-		}
+	// ALWAYS use stdout pipe to accumulate data in buffer
+	s.stdout, err = s.cmd.StdoutPipe()
+	if err != nil {
+		s.releasePool()
+		return fmt.Errorf("failed to create stdout pipe: %w", err)
 	}
 
 	s.stderr, err = s.cmd.StderrPipe()
@@ -156,10 +171,15 @@ func (s *StreamConverter) Start(ctx ...context.Context) error {
 	// Track process
 	GetMonitor().TrackProcess(s.cmd.Process.Pid)
 
-	// Start goroutine to read stdout continuously (only if not writing to file)
-	if s.outputPath == "" {
-		s.readDone = make(chan error, 1)
-		go s.readOutput()
+	// ALWAYS read stdout to accumulate in buffer
+	s.readDone = make(chan error, 1)
+	go s.readOutput()
+
+	// Start auto-flush ticker if enabled
+	if s.autoFlush && s.flushInterval > 0 {
+		s.flushStopChan = make(chan bool)
+		s.flushTicker = time.NewTicker(s.flushInterval)
+		go s.autoFlushLoop()
 	}
 
 	s.started = true
@@ -195,6 +215,30 @@ func (s *StreamConverter) Available() int {
 	return s.buffer.Len()
 }
 
+// autoFlushLoop runs in a goroutine and calls Flush() periodically
+func (s *StreamConverter) autoFlushLoop() {
+	for {
+		select {
+		case <-s.flushTicker.C:
+			// Auto-flush: closes current process and saves data
+			s.Flush()
+			return // Stop after flush
+
+		case <-s.flushStopChan:
+			s.flushTicker.Stop()
+			return
+		}
+	}
+}
+
+// stopAutoFlush stops the auto-flush ticker
+func (s *StreamConverter) stopAutoFlush() {
+	if s.autoFlush && s.flushStopChan != nil {
+		close(s.flushStopChan)
+		s.flushStopChan = nil
+	}
+}
+
 // Flush closes the input, waits for conversion to complete, and returns all output
 func (s *StreamConverter) Flush() ([]byte, error) {
 	if !s.started {
@@ -204,32 +248,16 @@ func (s *StreamConverter) Flush() ([]byte, error) {
 		return nil, fmt.Errorf("stream converter already closed")
 	}
 
+	// Stop auto-flush ticker if running
+	s.stopAutoFlush()
+
 	// Close stdin to signal end of input
 	if err := s.stdin.Close(); err != nil {
 		s.releasePool()
 		return nil, fmt.Errorf("failed to close stdin: %w", err)
 	}
 
-	// If writing to file, just wait for process to complete
-	if s.outputPath != "" {
-		if err := s.cmd.Wait(); err != nil {
-			stderrData, _ := io.ReadAll(s.stderr)
-			GetMonitor().RecordFailure()
-			s.releasePool()
-			return nil, fmt.Errorf("sox process failed: %w\nstderr: %s", err, string(stderrData))
-		}
-
-		// Untrack process
-		if s.cmd.Process != nil {
-			GetMonitor().UntrackProcess(s.cmd.Process.Pid)
-		}
-
-		s.closed = true
-		s.releasePool()
-		return nil, nil // No data to return when writing to file
-	}
-
-	// Wait for reading to complete (stdout mode)
+	// Wait for reading to complete
 	readErr := <-s.readDone
 
 	// Wait for process to exit
@@ -253,11 +281,21 @@ func (s *StreamConverter) Flush() ([]byte, error) {
 	s.closed = true
 	s.releasePool()
 
-	// Return all buffered data
+	// Get all buffered data
 	s.bufferLock.Lock()
-	defer s.bufferLock.Unlock()
+	data := s.buffer.Bytes()
+	s.bufferLock.Unlock()
 
-	return s.buffer.Bytes(), nil
+	// If output path is set, write accumulated buffer to file
+	if s.outputPath != "" {
+		if err := os.WriteFile(s.outputPath, data, 0644); err != nil {
+			return nil, fmt.Errorf("failed to write output file: %w", err)
+		}
+		return nil, nil // No data to return when writing to file
+	}
+
+	// Return all buffered data
+	return data, nil
 }
 
 // Close closes the stream converter and terminates the SoX process
@@ -268,6 +306,9 @@ func (s *StreamConverter) Close() error {
 	if s.closed {
 		return nil
 	}
+
+	// Stop auto-flush ticker if running
+	s.stopAutoFlush()
 
 	// Try to close stdin gracefully
 	if s.stdin != nil {
@@ -321,12 +362,9 @@ func (s *StreamConverter) buildCommandArgs() []string {
 	// Format-specific arguments for output
 	args = append(args, s.Options.buildFormatArgs(&s.Output)...)
 
-	// Output file (stdout or file path)
-	if s.outputPath != "" {
-		args = append(args, s.outputPath)
-	} else {
-		args = append(args, "-")
-	}
+	// ALWAYS use stdout to accumulate in buffer
+	// File writing happens in Flush() method
+	args = append(args, "-")
 
 	// Effects
 	if effects := s.Options.buildEffectArgs(); len(effects) > 0 {

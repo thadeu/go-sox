@@ -74,6 +74,27 @@ for packet := range rtpPackets {
 flacData, err := stream.Flush()
 ```
 
+### Auto-Flush (New!)
+
+Automatically flush and save after a specified duration:
+
+```go
+// Auto-flush after 5 minutes - perfect for RTP calls!
+converter := sox.NewStreamConverter(sox.PCM_RAW_16K_MONO, sox.FLAC_16K_MONO).
+    WithOutputPath("/app/recordings/call.flac").
+    WithAutoFlush(5 * time.Minute)
+
+converter.Start()
+
+// Write RTP packets
+for packet := range rtpChannel {
+    converter.Write(packet.AudioData)
+}
+
+// File automatically saved after 5 minutes!
+// No need to call Flush() manually
+```
+
 ### Production Example: RTP to Transcription
 
 ```go

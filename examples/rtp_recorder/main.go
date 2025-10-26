@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"time"
@@ -29,97 +30,49 @@ func main() {
 		log.Fatalf("SoX not installed: %v", err)
 	}
 
-	fmt.Println("RTP Recorder Example - Simplified API")
-	fmt.Println("====================================\n")
+	fmt.Println("RTP Recorder Example - Simplified API with Auto-Flush")
+	fmt.Println("=====================================================\n")
 
-	// Example 1: Basic streaming without pool (for single calls)
-	fmt.Println("1. Basic streaming (single call):")
-	basicStreaming()
+	// Example 1: Auto-flush with ticker (simplest!)
+	fmt.Println("1. Auto-flush with ticker (simplest!):")
+	autoFlushExample()
 
-	// Example 2: Multiple concurrent calls with pool
-	fmt.Println("\n2. Multiple concurrent calls with pool:")
-	concurrentCalls()
+	// Example 2: Manual flush (full control)
+	fmt.Println("\n2. Manual flush (full control):")
+	manualFlushExample()
 
-	// Example 3: Direct file output (no need to write manually)
-	fmt.Println("\n3. Direct file output:")
-	directFileOutput()
+	// Example 3: Multiple concurrent calls with pool
+	fmt.Println("\n3. Multiple concurrent calls with pool:")
+	concurrentCallsWithPool()
 }
 
-func basicStreaming() {
-	// Simple streaming without pool
-	converter := sox.NewStreamConverter(sox.PCM_RAW_16K_MONO, sox.FLAC_16K_MONO)
+func autoFlushExample() {
+	// Auto-flush after 2 seconds - SUPER SIMPLE!
+	converter := sox.NewStreamConverter(sox.PCM_RAW_16K_MONO, sox.FLAC_16K_MONO).
+		WithOutputPath("/tmp/test_auto.flac").
+		WithAutoFlush(2 * time.Second) // Flush automatically after 2s!
 
-	if err := converter.Start(); err != nil {
-		log.Fatalf("Failed to start: %v", err)
-	}
+	converter.Start()
 
+	fmt.Println("   Writing RTP packets...")
 	// Simulate RTP packets
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 100; i++ {
 		packet := simulateRTPPacket(16000, 20) // 20ms packets
 		converter.Write(packet)
-		time.Sleep(time.Millisecond * 5)
+		time.Sleep(time.Millisecond * 10)
 	}
 
-	// Get converted data
-	data, err := converter.Flush()
-	if err != nil {
-		log.Printf("Error: %v", err)
-		return
-	}
+	// Auto-flush will trigger after 2 seconds automatically!
+	time.Sleep(2500 * time.Millisecond)
 
-	fmt.Printf("   Converted %d bytes of FLAC data\n", len(data))
+	fmt.Println("   File saved to /tmp/test_auto.flac (auto-flushed!)")
 }
 
-func concurrentCalls() {
-	// Create SHARED pool for concurrent conversions
-	pool := sox.NewPoolWithLimit(2) // Limit to 2 concurrent conversions
-
-	// Simulate multiple concurrent calls
-	for callID := 1; callID <= 5; callID++ {
-		go func(id int) {
-			// Each call gets its own converter with SHARED pool
-			converter := sox.NewStreamConverter(sox.PCM_RAW_16K_MONO, sox.FLAC_16K_MONO).
-				WithPool(pool) // Pool compartilhado!
-
-			if err := converter.Start(); err != nil {
-				log.Printf("Call %d failed to start (pool full): %v", id, err)
-				return
-			}
-
-			fmt.Printf("   Call %d started (pool slot acquired)\n", id)
-
-			// Simulate RTP packets for this call
-			for i := 0; i < 20; i++ {
-				packet := simulateRTPPacket(16000, 20)
-				converter.Write(packet)
-				time.Sleep(time.Millisecond * 10)
-			}
-
-			// Get converted data
-			data, err := converter.Flush()
-			if err != nil {
-				log.Printf("Call %d conversion failed: %v", id, err)
-				return
-			}
-
-			fmt.Printf("   Call %d completed: %d bytes FLAC (pool slot released)\n", id, len(data))
-		}(callID)
-	}
-
-	// Wait for all calls to complete
-	time.Sleep(time.Second * 3)
-}
-
-func directFileOutput() {
-	// Direct file output - no need to write manually!
-	pool := sox.NewPoolWithLimit(1) // Single conversion
+func manualFlushExample() {
 	converter := sox.NewStreamConverter(sox.PCM_RAW_16K_MONO, sox.FLAC_16K_MONO).
-		WithOutputPath("/tmp/test_call.flac").
-		WithPool(pool) // Pool compartilhado
+		WithOutputPath("/tmp/test_manual.flac")
 
-	if err := converter.Start(); err != nil {
-		log.Fatalf("Failed to start: %v", err)
-	}
+	converter.Start()
 
 	// Simulate RTP packets
 	for i := 0; i < 50; i++ {
@@ -128,13 +81,48 @@ func directFileOutput() {
 		time.Sleep(time.Millisecond * 5)
 	}
 
-	// Flush - file is automatically written!
-	_, err := converter.Flush()
-	if err != nil {
-		log.Printf("Error: %v", err)
-		return
+	// Manual flush when you want
+	converter.Flush()
+	fmt.Println("   File saved to /tmp/test_manual.flac")
+}
+
+func concurrentCallsWithPool() {
+	// Create SHARED pool for concurrent conversions
+	pool := sox.NewPoolWithLimit(2) // Limit to 2 concurrent conversions
+
+	// Simulate multiple concurrent calls
+	for callID := 1; callID <= 3; callID++ {
+		go func(id int) {
+			// Each call with auto-flush
+			converter := sox.NewStreamConverter(sox.PCM_RAW_16K_MONO, sox.FLAC_16K_MONO).
+				WithOutputPath(fmt.Sprintf("/tmp/call_%d.flac", id)).
+				WithPool(pool).
+				WithAutoFlush(1 * time.Second) // Auto-flush after 1s
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			if err := converter.Start(ctx); err != nil {
+				log.Printf("Call %d failed to start (pool full): %v", id, err)
+				return
+			}
+
+			fmt.Printf("   Call %d started (pool slot acquired)\n", id)
+
+			// Simulate RTP packets
+			for i := 0; i < 50; i++ {
+				packet := simulateRTPPacket(16000, 20)
+				converter.Write(packet)
+				time.Sleep(time.Millisecond * 15)
+			}
+
+			// Wait for auto-flush
+			time.Sleep(1500 * time.Millisecond)
+
+			fmt.Printf("   Call %d completed: /tmp/call_%d.flac saved (auto-flushed!)\n", id, id)
+		}(callID)
 	}
 
-	fmt.Println("   File written to /tmp/test_call.flac")
-	fmt.Println("   No manual file writing needed!")
+	// Wait for all calls to complete
+	time.Sleep(time.Second * 4)
 }
