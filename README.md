@@ -233,7 +233,7 @@ ulimit -n 65536  # File descriptors
 ulimit -u 4096   # Processes
 ```
 
-See [PRODUCTION.md](PRODUCTION.md) for detailed deployment instructions including:
+See [PRODUCTION.md](docs/PRODUCTION.md) for detailed deployment instructions including:
 - Linux ulimit persistence across reboots
 - Docker/Kubernetes configuration
 - Systemd service limits
