@@ -1,0 +1,27 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+
+# Test binary
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Go workspace file
+go.work
+
+# Temporary files
+*.tmp
+*.raw
+*.flac
+*.wav
+*.mp3
+
+coverage/
+coverage.*
+.DS_Store
