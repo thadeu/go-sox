@@ -4,7 +4,7 @@ test:
 	go test ./... -v -cover
 
 bench:
-	go test ./... -bench=. -benchmem
+	go test ./... -bench=. -benchmem -v
 
 example:
 	cd examples && go run rtp_to_flac.go

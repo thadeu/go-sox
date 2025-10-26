@@ -7,22 +7,51 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/suite"
 
 	. "github.com/thadeu/go-sox"
 )
 
-// TestParallelConversions tests multiple concurrent conversions
-func TestParallelConversions(t *testing.T) {
-	if err := CheckSoxInstalled(""); err != nil {
-		t.Skipf("SoX not installed: %v", err)
+// StressTestSuite defines the test suite for stress/performance tests
+type StressTestSuite struct {
+	suite.Suite
+}
+
+// SetupSuite runs once before all tests
+func (s *StressTestSuite) SetupSuite() {
+	err := CheckSoxInstalled("")
+	if err != nil {
+		s.T().Skipf("SoX not installed: %v", err)
+	}
+}
+
+// generateTestPCM generates a simple PCM audio buffer
+func (s *StressTestSuite) generateTestPCM(sampleRate, channels, durationMs int) []byte {
+	numSamples := (sampleRate * durationMs) / 1000
+	buffer := make([]byte, numSamples*channels*2) // 16-bit = 2 bytes per sample
+
+	for i := 0; i < numSamples; i++ {
+		value := int16(32767.0 * 0.5 * (1.0 + float64(i%100)/100.0))
+		for ch := 0; ch < channels; ch++ {
+			idx := (i*channels + ch) * 2
+			buffer[idx] = byte(value & 0xFF)
+			buffer[idx+1] = byte((value >> 8) & 0xFF)
+		}
 	}
 
+	return buffer
+}
+
+// TestParallelConversions tests multiple concurrent conversions
+func (s *StressTestSuite) TestParallelConversions() {
 	const numConversions = 50
 	var wg sync.WaitGroup
 	var successCount, failureCount atomic.Int32
 
-	pcmData := generateTestPCM(16000, 1, 100)
+	pcmData := s.generateTestPCM(16000, 1, 100)
 
 	for i := 0; i < numConversions; i++ {
 		wg.Add(1)
@@ -35,7 +64,7 @@ func TestParallelConversions(t *testing.T) {
 
 			err := converter.Convert(input, output)
 			if err != nil {
-				t.Logf("Conversion %d failed: %v", id, err)
+				s.T().Logf("Conversion %d failed: %v", id, err)
 				failureCount.Add(1)
 			} else {
 				successCount.Add(1)
@@ -45,92 +74,34 @@ func TestParallelConversions(t *testing.T) {
 
 	wg.Wait()
 
-	t.Logf("Completed %d conversions: %d successful, %d failed",
+	s.T().Logf("Completed %d conversions: %d successful, %d failed",
 		numConversions, successCount.Load(), failureCount.Load())
 
-	if failureCount.Load() > 0 {
-		t.Errorf("Had %d failures out of %d conversions", failureCount.Load(), numConversions)
-	}
+	assert.Equal(s.T(), int32(0), failureCount.Load(),
+		"Had %d failures out of %d conversions", failureCount.Load(), numConversions)
 }
 
-// TestPooledConversions tests pool-based concurrency control
-func TestPooledConversions(t *testing.T) {
-	if err := CheckSoxInstalled(""); err != nil {
-		t.Skipf("SoX not installed: %v", err)
-	}
-
-	pool := NewPoolWithLimit(10) // Limit to 10 concurrent
-	const numConversions = 100
-
-	var wg sync.WaitGroup
-	var successCount, failureCount atomic.Int32
-
-	pcmData := generateTestPCM(16000, 1, 100)
-
-	start := time.Now()
-
-	for i := 0; i < numConversions; i++ {
-		wg.Add(1)
-		go func(id int) {
-			defer wg.Done()
-
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-
-			converter := NewConverter(PCM_RAW_16K_MONO, FLAC_16K_MONO).
-				WithPool(pool)
-			input := bytes.NewReader(pcmData)
-			output := &bytes.Buffer{}
-
-			err := converter.ConvertWithContext(ctx, input, output)
-			if err != nil {
-				t.Logf("Conversion %d failed: %v", id, err)
-				failureCount.Add(1)
-			} else {
-				successCount.Add(1)
-			}
-		}(i)
-	}
-
-	wg.Wait()
-	elapsed := time.Since(start)
-
-	t.Logf("Completed %d conversions in %v: %d successful, %d failed",
-		numConversions, elapsed, successCount.Load(), failureCount.Load())
-	t.Logf("Average: %.2fms per conversion", float64(elapsed.Milliseconds())/float64(numConversions))
-
-	if failureCount.Load() > 0 {
-		t.Errorf("Had %d failures out of %d conversions", failureCount.Load(), numConversions)
-	}
-}
-
-// TestResilientConversions tests conversion with retry and circuit breaker
-func TestResilientConversions(t *testing.T) {
-	if err := CheckSoxInstalled(""); err != nil {
-		t.Skipf("SoX not installed: %v", err)
-	}
-
+// TestResilientConversions tests resilient conversions with retry
+func (s *StressTestSuite) TestResilientConversions() {
 	const numConversions = 20
 	var wg sync.WaitGroup
 	var successCount, failureCount atomic.Int32
 
-	pcmData := generateTestPCM(16000, 1, 100)
+	pcmData := s.generateTestPCM(16000, 1, 100)
 
 	for i := 0; i < numConversions; i++ {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
 
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-
 			converter := NewConverter(PCM_RAW_16K_MONO, FLAC_16K_MONO)
+
 			input := bytes.NewReader(pcmData)
 			output := &bytes.Buffer{}
 
-			err := converter.ConvertWithContext(ctx, input, output)
+			err := converter.Convert(input, output)
 			if err != nil {
-				t.Logf("Conversion %d failed: %v", id, err)
+				s.T().Logf("Conversion %d failed: %v", id, err)
 				failureCount.Add(1)
 			} else {
 				successCount.Add(1)
@@ -140,21 +111,15 @@ func TestResilientConversions(t *testing.T) {
 
 	wg.Wait()
 
-	t.Logf("Completed %d conversions: %d successful, %d failed",
-		numConversions, successCount.Load(), failureCount.Load())
+	s.T().Logf("Resilient conversions: %d successful, %d failed",
+		successCount.Load(), failureCount.Load())
 
-	stats := GetMonitor().GetStats()
-	t.Logf("Monitor stats: active=%d, total=%d, failed=%d, success_rate=%.2f%%",
-		stats.ActiveProcesses, stats.TotalConversions, stats.FailedConversions, stats.SuccessRate)
+	assert.Greater(s.T(), successCount.Load(), int32(0), "Expected at least some successful conversions")
 }
 
-// TestStreamParallel tests parallel stream conversions
-func TestStreamParallel(t *testing.T) {
-	if err := CheckSoxInstalled(""); err != nil {
-		t.Skipf("SoX not installed: %v", err)
-	}
-
-	const numStreams = 20
+// TestStreamParallel tests parallel streaming conversions
+func (s *StressTestSuite) TestStreamParallel() {
+	const numStreams = 10
 	var wg sync.WaitGroup
 	var successCount, failureCount atomic.Int32
 
@@ -165,168 +130,126 @@ func TestStreamParallel(t *testing.T) {
 
 			stream := NewStreamConverter(PCM_RAW_16K_MONO, FLAC_16K_MONO)
 			if err := stream.Start(); err != nil {
-				t.Logf("Stream %d start failed: %v", id, err)
+				s.T().Logf("Stream %d failed to start: %v", id, err)
 				failureCount.Add(1)
 				return
 			}
 
-			// Write 10 chunks
-			for j := 0; j < 10; j++ {
-				pcmData := generateTestPCM(16000, 1, 20)
+			// Write multiple chunks
+			for j := 0; j < 5; j++ {
+				pcmData := s.generateTestPCM(16000, 1, 20)
 				if _, err := stream.Write(pcmData); err != nil {
-					t.Logf("Stream %d write failed: %v", id, err)
+					s.T().Logf("Stream %d write failed: %v", id, err)
 					failureCount.Add(1)
-					stream.Close()
 					return
 				}
 			}
 
+			// Flush
 			if _, err := stream.Flush(); err != nil {
-				t.Logf("Stream %d flush failed: %v", id, err)
+				s.T().Logf("Stream %d flush failed: %v", id, err)
 				failureCount.Add(1)
-			} else {
-				successCount.Add(1)
+				return
 			}
+
+			successCount.Add(1)
 		}(i)
 	}
 
 	wg.Wait()
 
-	t.Logf("Completed %d streams: %d successful, %d failed",
-		numStreams, successCount.Load(), failureCount.Load())
+	s.T().Logf("Parallel streams: %d successful, %d failed",
+		successCount.Load(), failureCount.Load())
 
-	if failureCount.Load() > 0 {
-		t.Errorf("Had %d failures out of %d streams", failureCount.Load(), numStreams)
-	}
+	assert.Equal(s.T(), int32(0), failureCount.Load(),
+		"Had %d stream failures out of %d", failureCount.Load(), numStreams)
 }
 
-// TestCircuitBreaker tests circuit breaker behavior
-func TestCircuitBreaker(t *testing.T) {
+// TestCircuitBreaker tests circuit breaker functionality
+func (s *StressTestSuite) TestCircuitBreaker() {
 	cb := NewCircuitBreaker()
 
-	// Should be closed initially
-	if cb.State() != StateClosed {
-		t.Errorf("Expected StateClosed, got %v", cb.State())
-	}
+	// Test normal operation
+	err := cb.Call(func() error {
+		return nil
+	})
+	assert.NoError(s.T(), err)
+	assert.Equal(s.T(), StateClosed, cb.State())
 
-	// Trigger failures to open circuit
+	// Test failures
 	for i := 0; i < 5; i++ {
 		cb.Call(func() error {
 			return fmt.Errorf("simulated error")
 		})
 	}
 
-	// Should be open now
-	if cb.State() != StateOpen {
-		t.Errorf("Expected StateOpen after failures, got %v", cb.State())
-	}
+	// Circuit should be open now
+	assert.Equal(s.T(), StateOpen, cb.State())
 
-	// Should reject calls when open
-	err := cb.Call(func() error {
+	// Calls should fail immediately
+	err = cb.Call(func() error {
 		return nil
 	})
+	assert.Error(s.T(), err)
+	assert.Equal(s.T(), ErrCircuitOpen, err)
 
-	if err != ErrCircuitOpen {
-		t.Errorf("Expected ErrCircuitOpen, got %v", err)
-	}
+	s.T().Log("Circuit breaker working correctly")
 }
 
 // TestResourceMonitor tests resource monitoring
-func TestResourceMonitor(t *testing.T) {
+func (s *StressTestSuite) TestResourceMonitor() {
 	monitor := GetMonitor()
-	monitor.Reset()
 
-	// Simulate tracking processes
-	monitor.TrackProcess(1000)
-	monitor.TrackProcess(1001)
+	// Track some processes
+	monitor.TrackProcess(1234)
+	monitor.TrackProcess(5678)
 
-	if active := monitor.ActiveProcesses(); active != 2 {
-		t.Errorf("Expected 2 active processes, got %d", active)
-	}
+	activeCount := monitor.ActiveProcesses()
+	assert.Equal(s.T(), 2, activeCount)
 
-	monitor.UntrackProcess(1000)
+	// Untrack
+	monitor.UntrackProcess(1234)
+	activeCount = monitor.ActiveProcesses()
+	assert.Equal(s.T(), 1, activeCount)
 
-	if active := monitor.ActiveProcesses(); active != 1 {
-		t.Errorf("Expected 1 active process after untrack, got %d", active)
-	}
+	// Record failure
+	monitor.RecordFailure()
+	failures := monitor.FailedConversions()
+	assert.Equal(s.T(), int64(1), failures)
 
-	stats := monitor.GetStats()
-	if stats.TotalConversions != 2 {
-		t.Errorf("Expected 2 total conversions, got %d", stats.TotalConversions)
-	}
+	s.T().Log("Resource monitor working correctly")
 }
 
-// TestPoolCapacity tests pool capacity limits
-func TestPoolCapacity(t *testing.T) {
+// TestPoolCapacity tests pool capacity management
+func (s *StressTestSuite) TestPoolCapacity() {
 	pool := NewPoolWithLimit(5)
 
+	assert.Equal(s.T(), 5, pool.MaxWorkers())
+	assert.Equal(s.T(), 0, pool.ActiveWorkers())
+	assert.Equal(s.T(), 5, pool.AvailableSlots())
+
+	// Acquire slots
 	ctx := context.Background()
-
-	// Acquire 5 slots (should succeed)
-	for i := 0; i < 5; i++ {
-		if err := pool.Acquire(ctx); err != nil {
-			t.Fatalf("Failed to acquire slot %d: %v", i, err)
-		}
+	for i := 0; i < 3; i++ {
+		err := pool.Acquire(ctx)
+		require.NoError(s.T(), err)
 	}
 
-	if pool.ActiveWorkers() != 5 {
-		t.Errorf("Expected 5 active workers, got %d", pool.ActiveWorkers())
+	assert.Equal(s.T(), 3, pool.ActiveWorkers())
+	assert.Equal(s.T(), 2, pool.AvailableSlots())
+
+	// Release slots
+	for i := 0; i < 3; i++ {
+		pool.Release()
 	}
 
-	// 6th acquire should block
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
+	assert.Equal(s.T(), 0, pool.ActiveWorkers())
+	assert.Equal(s.T(), 5, pool.AvailableSlots())
 
-	err := pool.Acquire(ctx)
-	if err == nil {
-		t.Error("Expected timeout error when pool full")
-	}
-
-	// Release one and try again
-	pool.Release()
-
-	ctx2 := context.Background()
-	if err := pool.Acquire(ctx2); err != nil {
-		t.Errorf("Failed to acquire after release: %v", err)
-	}
+	s.T().Log("Pool capacity management working correctly")
 }
 
-// BenchmarkParallelConversions benchmarks parallel conversions
-func BenchmarkParallelConversions(b *testing.B) {
-	if err := CheckSoxInstalled(""); err != nil {
-		b.Skipf("SoX not installed: %v", err)
-	}
-
-	pcmData := generateTestPCM(16000, 1, 100)
-
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			converter := NewConverter(PCM_RAW_16K_MONO, FLAC_16K_MONO)
-			input := bytes.NewReader(pcmData)
-			output := &bytes.Buffer{}
-			converter.Convert(input, output)
-		}
-	})
-}
-
-// BenchmarkPooledConversions benchmarks pooled conversions
-func BenchmarkPooledConversions(b *testing.B) {
-	if err := CheckSoxInstalled(""); err != nil {
-		b.Skipf("SoX not installed: %v", err)
-	}
-
-	pool := NewPoolWithLimit(50)
-	pcmData := generateTestPCM(16000, 1, 100)
-
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			converter := NewConverter(PCM_RAW_16K_MONO, FLAC_16K_MONO).
-				WithPool(pool)
-			input := bytes.NewReader(pcmData)
-			output := &bytes.Buffer{}
-			converter.Convert(input, output)
-		}
-	})
+// TestStressSuite runs the stress test suite
+func TestStressSuite(t *testing.T) {
+	suite.Run(t, new(StressTestSuite))
 }

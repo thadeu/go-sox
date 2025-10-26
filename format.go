@@ -5,7 +5,7 @@ import "fmt"
 // AudioFormat defines the audio format parameters for input or output
 type AudioFormat struct {
 	Type       string // "raw", "flac", "wav", "mp3", "ogg", etc.
-	Encoding   string // "signed-integer", "unsigned-integer", "floating-point", "mu-law", "a-law", "ima-adpcm", "ms-adpcm", "gsm-full-rate"
+	Encoding   string // "signed-integer", "unsigned-integer", "floating-point", "mu-law", "a-law", "ima-adpcm", "ms-adpcm", "gsm-full-rate", "little-endian", "big-endian"
 	SampleRate int    // Sample rate in Hz (e.g., 8000, 16000, 44100, 48000)
 	Channels   int    // Number of channels: 1 = mono, 2 = stereo
 	BitDepth   int    // Bits per sample: 8, 16, 24, 32

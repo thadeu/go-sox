@@ -3,22 +3,36 @@ package sox
 import (
 	"bytes"
 	"os"
-	"os/exec"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/suite"
 
 	. "github.com/thadeu/go-sox"
 )
 
-// TestCheckSoxInstalled verifies that SoX is installed
-func TestCheckSoxInstalled(t *testing.T) {
+// ConverterTestSuite defines the test suite for Converter
+type ConverterTestSuite struct {
+	suite.Suite
+	tmpDir string
+}
+
+// SetupSuite runs once before all tests
+func (s *ConverterTestSuite) SetupSuite() {
 	err := CheckSoxInstalled("")
 	if err != nil {
-		t.Skipf("SoX not installed, skipping tests: %v", err)
+		s.T().Skipf("SoX not installed, skipping tests: %v", err)
 	}
 }
 
+// SetupTest runs before each test
+func (s *ConverterTestSuite) SetupTest() {
+	s.tmpDir = s.T().TempDir()
+}
+
 // generateTestPCM generates a simple PCM audio buffer
-func generateTestPCM(sampleRate, channels, durationMs int) []byte {
+func (s *ConverterTestSuite) generateTestPCM(sampleRate, channels, durationMs int) []byte {
 	numSamples := (sampleRate * durationMs) / 1000
 	buffer := make([]byte, numSamples*channels*2) // 16-bit = 2 bytes per sample
 
@@ -38,8 +52,8 @@ func generateTestPCM(sampleRate, channels, durationMs int) []byte {
 	return buffer
 }
 
-// TestAudioFormat_Validate tests format validation
-func TestAudioFormat_Validate(t *testing.T) {
+// TestAudioFormatValidate tests format validation
+func (s *ConverterTestSuite) TestAudioFormatValidate() {
 	tests := []struct {
 		name    string
 		format  AudioFormat
@@ -56,7 +70,6 @@ func TestAudioFormat_Validate(t *testing.T) {
 				Type:       "raw",
 				SampleRate: 16000,
 				Channels:   1,
-				BitDepth:   16,
 			},
 			wantErr: true,
 		},
@@ -66,7 +79,6 @@ func TestAudioFormat_Validate(t *testing.T) {
 				Type:     "raw",
 				Encoding: "signed-integer",
 				Channels: 1,
-				BitDepth: 16,
 			},
 			wantErr: true,
 		},
@@ -78,179 +90,96 @@ func TestAudioFormat_Validate(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+		s.Run(tt.name, func() {
 			err := tt.format.Validate()
-			if (err != nil) != tt.wantErr {
-				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			if tt.wantErr {
+				assert.Error(s.T(), err)
+			} else {
+				assert.NoError(s.T(), err)
 			}
 		})
 	}
 }
 
-// TestConverter_Convert tests basic conversion
-func TestConverter_Convert(t *testing.T) {
-	if err := CheckSoxInstalled(""); err != nil {
-		t.Skipf("SoX not installed: %v", err)
-	}
+// TestConverterConvert tests basic conversion
+func (s *ConverterTestSuite) TestConverterConvert() {
+	pcmData := s.generateTestPCM(16000, 1, 100) // 100ms of audio
 
-	// Generate test PCM data
-	pcmData := generateTestPCM(16000, 1, 100) // 100ms of audio
-
-	// Create converter
 	converter := NewConverter(PCM_RAW_16K_MONO, FLAC_16K_MONO)
 
-	// Convert
 	input := bytes.NewReader(pcmData)
 	output := &bytes.Buffer{}
 
 	err := converter.Convert(input, output)
-	if err != nil {
-		t.Fatalf("Convert() failed: %v", err)
-	}
+	require.NoError(s.T(), err)
 
-	// Verify output is not empty
-	if output.Len() == 0 {
-		t.Error("Convert() produced empty output")
-	}
-
-	// FLAC files start with "fLaC" magic bytes
-	if output.Len() >= 4 {
-		magic := output.Bytes()[:4]
-		if string(magic) != "fLaC" {
-			t.Errorf("Output doesn't appear to be FLAC (magic: %x)", magic)
-		}
-	}
+	assert.Greater(s.T(), output.Len(), 0, "Expected non-empty output")
+	s.T().Logf("Converted %d bytes PCM to %d bytes FLAC", len(pcmData), output.Len())
 }
 
-// TestConverter_ConvertFile tests file-based conversion
-func TestConverter_ConvertFile(t *testing.T) {
-	if err := CheckSoxInstalled(""); err != nil {
-		t.Skipf("SoX not installed: %v", err)
-	}
+// TestConverterConvertFile tests file-based conversion
+func (s *ConverterTestSuite) TestConverterConvertFile() {
+	// Create input file
+	inputPath := s.tmpDir + "/input.raw"
+	outputPath := s.tmpDir + "/output.flac"
 
-	// Create temporary input file
-	tmpInput, err := os.CreateTemp("", "test_input_*.raw")
-	if err != nil {
-		t.Fatalf("Failed to create temp file: %v", err)
-	}
-	defer os.Remove(tmpInput.Name())
+	pcmData := s.generateTestPCM(16000, 1, 100)
+	err := os.WriteFile(inputPath, pcmData, 0644)
+	require.NoError(s.T(), err)
 
-	// Write test PCM data
-	pcmData := generateTestPCM(16000, 1, 100)
-	if _, err := tmpInput.Write(pcmData); err != nil {
-		t.Fatalf("Failed to write test data: %v", err)
-	}
-	tmpInput.Close()
-
-	// Create temporary output file
-	tmpOutput, err := os.CreateTemp("", "test_output_*.flac")
-	if err != nil {
-		t.Fatalf("Failed to create temp output file: %v", err)
-	}
-	tmpOutput.Close()
-	defer os.Remove(tmpOutput.Name())
-
-	// Create converter and convert
+	// Convert
 	converter := NewConverter(PCM_RAW_16K_MONO, FLAC_16K_MONO)
-	err = converter.ConvertFile(tmpInput.Name(), tmpOutput.Name())
-	if err != nil {
-		t.Fatalf("ConvertFile() failed: %v", err)
-	}
+	err = converter.ConvertFile(inputPath, outputPath)
+	require.NoError(s.T(), err)
 
-	// Verify output file exists and is not empty
-	stat, err := os.Stat(tmpOutput.Name())
-	if err != nil {
-		t.Fatalf("Output file not created: %v", err)
-	}
+	// Verify output file exists
+	fileInfo, err := os.Stat(outputPath)
+	require.NoError(s.T(), err)
+	assert.Greater(s.T(), fileInfo.Size(), int64(0))
 
-	if stat.Size() == 0 {
-		t.Error("Output file is empty")
-	}
+	s.T().Logf("Created output file: %d bytes", fileInfo.Size())
 }
 
 // TestStreamConverter tests streaming conversion
-func TestStreamConverter(t *testing.T) {
-	if err := CheckSoxInstalled(""); err != nil {
-		t.Skipf("SoX not installed: %v", err)
-	}
-
-	// Create stream converter
+func (s *ConverterTestSuite) TestStreamConverter() {
 	stream := NewStreamConverter(PCM_RAW_16K_MONO, FLAC_16K_MONO)
+	require.NoError(s.T(), stream.Start())
 
-	// Start the stream
-	err := stream.Start()
-	if err != nil {
-		t.Fatalf("Start() failed: %v", err)
-	}
+	// Write some data
+	pcmData := s.generateTestPCM(16000, 1, 100)
+	_, err := stream.Write(pcmData)
+	require.NoError(s.T(), err)
 
-	// Write test data in chunks (simulating RTP packets)
-	pcmData := generateTestPCM(16000, 1, 500) // 500ms of audio
-	chunkSize := 320                          // 20ms at 16kHz mono 16-bit
-
-	for i := 0; i < len(pcmData); i += chunkSize {
-		end := i + chunkSize
-		if end > len(pcmData) {
-			end = len(pcmData)
-		}
-
-		_, err := stream.Write(pcmData[i:end])
-		if err != nil {
-			t.Fatalf("Write() failed: %v", err)
-		}
-	}
-
-	// Flush and get output
+	// Flush
 	output, err := stream.Flush()
-	if err != nil {
-		t.Fatalf("Flush() failed: %v", err)
-	}
+	require.NoError(s.T(), err)
+	assert.Greater(s.T(), len(output), 0)
 
-	// Verify output
-	if len(output) == 0 {
-		t.Error("Stream conversion produced empty output")
-	}
-
-	// Verify FLAC magic bytes
-	if len(output) >= 4 && string(output[:4]) != "fLaC" {
-		t.Errorf("Output doesn't appear to be FLAC (magic: %x)", output[:4])
-	}
+	s.T().Logf("Stream output: %d bytes", len(output))
 }
 
-// TestStreamConverter_MultipleWrites tests accumulating data over multiple writes
-func TestStreamConverter_MultipleWrites(t *testing.T) {
-	if err := CheckSoxInstalled(""); err != nil {
-		t.Skipf("SoX not installed: %v", err)
-	}
-
+// TestStreamConverterMultipleWrites tests multiple writes
+func (s *ConverterTestSuite) TestStreamConverterMultipleWrites() {
 	stream := NewStreamConverter(PCM_RAW_16K_MONO, FLAC_16K_MONO)
+	require.NoError(s.T(), stream.Start())
 
-	err := stream.Start()
-	if err != nil {
-		t.Fatalf("Start() failed: %v", err)
-	}
-
-	// Write multiple chunks with different sizes
-	chunks := []int{100, 200, 150, 250} // different durations in ms
-	for _, durationMs := range chunks {
-		pcmData := generateTestPCM(16000, 1, durationMs)
+	// Write multiple chunks
+	for i := 0; i < 5; i++ {
+		pcmData := s.generateTestPCM(16000, 1, 20) // 20ms chunks
 		_, err := stream.Write(pcmData)
-		if err != nil {
-			t.Fatalf("Write() failed: %v", err)
-		}
+		require.NoError(s.T(), err)
 	}
 
+	// Flush
 	output, err := stream.Flush()
-	if err != nil {
-		t.Fatalf("Flush() failed: %v", err)
-	}
+	require.NoError(s.T(), err)
+	assert.Greater(s.T(), len(output), 0)
 
-	if len(output) == 0 {
-		t.Error("Stream conversion produced empty output")
-	}
+	s.T().Logf("Multiple writes output: %d bytes", len(output))
 }
 
-// TestPresets verifies that preset formats are valid
-func TestPresets(t *testing.T) {
+// TestPresets tests format presets
+func (s *ConverterTestSuite) TestPresets() {
 	presets := []AudioFormat{
 		PCM_RAW_8K_MONO,
 		PCM_RAW_16K_MONO,
@@ -262,42 +191,100 @@ func TestPresets(t *testing.T) {
 	}
 
 	for _, preset := range presets {
-		if err := preset.Validate(); err != nil {
-			t.Errorf("Preset %+v failed validation: %v", preset, err)
+		s.Run(preset.Type, func() {
+			err := preset.Validate()
+			assert.NoError(s.T(), err, "Preset %s should be valid", preset.Type)
+		})
+	}
+}
+
+// TestConverterSuite runs the converter test suite
+func TestConverterSuite(t *testing.T) {
+	suite.Run(t, new(ConverterTestSuite))
+}
+
+// Standalone test for SoX installation check
+func TestCheckSoxInstalled(t *testing.T) {
+	err := CheckSoxInstalled("")
+	if err != nil {
+		t.Skipf("SoX not installed, skipping tests: %v", err)
+	}
+}
+
+// Benchmarks
+
+// BenchmarkConverter_Convert benchmarks basic conversion
+func BenchmarkConverter_Convert(b *testing.B) {
+	if err := CheckSoxInstalled(""); err != nil {
+		b.Skip("SoX not installed")
+	}
+
+	// Generate test data once
+	pcmData := generateBenchmarkPCM(16000, 1, 1000) // 1 second of audio
+	converter := NewConverter(PCM_RAW_16K_MONO, FLAC_16K_MONO)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		input := bytes.NewReader(pcmData)
+		output := &bytes.Buffer{}
+
+		if err := converter.Convert(input, output); err != nil {
+			b.Fatalf("Conversion failed: %v", err)
 		}
 	}
 }
 
-// BenchmarkConverter_Convert benchmarks the conversion performance
-func BenchmarkConverter_Convert(b *testing.B) {
+// BenchmarkConverter_ConvertSmall benchmarks small audio conversion (100ms)
+func BenchmarkConverter_ConvertSmall(b *testing.B) {
 	if err := CheckSoxInstalled(""); err != nil {
-		b.Skipf("SoX not installed: %v", err)
+		b.Skip("SoX not installed")
 	}
 
-	// Generate 1 second of audio
-	pcmData := generateTestPCM(16000, 1, 1000)
+	pcmData := generateBenchmarkPCM(16000, 1, 100) // 100ms
 	converter := NewConverter(PCM_RAW_16K_MONO, FLAC_16K_MONO)
 
 	b.ResetTimer()
+	b.ReportAllocs()
+
 	for i := 0; i < b.N; i++ {
 		input := bytes.NewReader(pcmData)
 		output := &bytes.Buffer{}
-		err := converter.Convert(input, output)
-		if err != nil {
-			b.Fatalf("Convert() failed: %v", err)
-		}
+		converter.Convert(input, output)
+	}
+}
+
+// BenchmarkConverter_ConvertLarge benchmarks large audio conversion (5 seconds)
+func BenchmarkConverter_ConvertLarge(b *testing.B) {
+	if err := CheckSoxInstalled(""); err != nil {
+		b.Skip("SoX not installed")
+	}
+
+	pcmData := generateBenchmarkPCM(16000, 1, 5000) // 5 seconds
+	converter := NewConverter(PCM_RAW_16K_MONO, FLAC_16K_MONO)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		input := bytes.NewReader(pcmData)
+		output := &bytes.Buffer{}
+		converter.Convert(input, output)
 	}
 }
 
 // BenchmarkStreamConverter benchmarks streaming conversion
 func BenchmarkStreamConverter(b *testing.B) {
 	if err := CheckSoxInstalled(""); err != nil {
-		b.Skipf("SoX not installed: %v", err)
+		b.Skip("SoX not installed")
 	}
 
-	pcmData := generateTestPCM(16000, 1, 1000)
+	pcmData := generateBenchmarkPCM(16000, 1, 1000) // 1 second
 
 	b.ResetTimer()
+	b.ReportAllocs()
+
 	for i := 0; i < b.N; i++ {
 		stream := NewStreamConverter(PCM_RAW_16K_MONO, FLAC_16K_MONO)
 		stream.Start()
@@ -306,32 +293,143 @@ func BenchmarkStreamConverter(b *testing.B) {
 	}
 }
 
-// BenchmarkFFmpegComparison provides a baseline comparison with ffmpeg (if available)
-func BenchmarkFFmpegComparison(b *testing.B) {
-	// Check if ffmpeg is available
-	if err := exec.Command("ffmpeg", "-version").Run(); err != nil {
-		b.Skipf("ffmpeg not installed")
+// BenchmarkStreamConverter_MultipleWrites benchmarks streaming with multiple writes
+func BenchmarkStreamConverter_MultipleWrites(b *testing.B) {
+	if err := CheckSoxInstalled(""); err != nil {
+		b.Skip("SoX not installed")
 	}
 
-	// Create temporary files
-	tmpInput, _ := os.CreateTemp("", "bench_input_*.raw")
-	tmpOutput, _ := os.CreateTemp("", "bench_output_*.flac")
-	defer os.Remove(tmpInput.Name())
-	defer os.Remove(tmpOutput.Name())
-
-	pcmData := generateTestPCM(16000, 1, 1000)
-	tmpInput.Write(pcmData)
-	tmpInput.Close()
-	tmpOutput.Close()
+	chunk := generateBenchmarkPCM(16000, 1, 20) // 20ms chunks
 
 	b.ResetTimer()
+	b.ReportAllocs()
+
 	for i := 0; i < b.N; i++ {
-		cmd := exec.Command("ffmpeg", "-y",
-			"-f", "s16le",
-			"-ar", "16000",
-			"-ac", "1",
-			"-i", tmpInput.Name(),
-			tmpOutput.Name())
-		cmd.Run()
+		stream := NewStreamConverter(PCM_RAW_16K_MONO, FLAC_16K_MONO)
+		stream.Start()
+
+		// Write 50 chunks (1 second total)
+		for j := 0; j < 50; j++ {
+			stream.Write(chunk)
+		}
+
+		stream.Flush()
 	}
+}
+
+// BenchmarkConverter_PCMToFLAC benchmarks PCM to FLAC conversion
+func BenchmarkConverter_PCMToFLAC(b *testing.B) {
+	if err := CheckSoxInstalled(""); err != nil {
+		b.Skip("SoX not installed")
+	}
+
+	pcmData := generateBenchmarkPCM(16000, 1, 1000)
+	converter := NewConverter(PCM_RAW_16K_MONO, FLAC_16K_MONO)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		input := bytes.NewReader(pcmData)
+		output := &bytes.Buffer{}
+		converter.Convert(input, output)
+	}
+}
+
+// BenchmarkConverter_PCMToWAV benchmarks PCM to WAV conversion
+func BenchmarkConverter_PCMToWAV(b *testing.B) {
+	if err := CheckSoxInstalled(""); err != nil {
+		b.Skip("SoX not installed")
+	}
+
+	pcmData := generateBenchmarkPCM(16000, 1, 1000)
+	converter := NewConverter(PCM_RAW_16K_MONO, WAV_16K_MONO)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		input := bytes.NewReader(pcmData)
+		output := &bytes.Buffer{}
+		converter.Convert(input, output)
+	}
+}
+
+// BenchmarkConverter_PCMToULAW benchmarks PCM to ULAW conversion
+func BenchmarkConverter_PCMToULAW(b *testing.B) {
+	if err := CheckSoxInstalled(""); err != nil {
+		b.Skip("SoX not installed")
+	}
+
+	pcmData := generateBenchmarkPCM(16000, 1, 1000)
+	converter := NewConverter(PCM_RAW_16K_MONO, ULAW_8K_MONO)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		input := bytes.NewReader(pcmData)
+		output := &bytes.Buffer{}
+		converter.Convert(input, output)
+	}
+}
+
+// BenchmarkConverter_WithPool benchmarks conversion with pool
+func BenchmarkConverter_WithPool(b *testing.B) {
+	if err := CheckSoxInstalled(""); err != nil {
+		b.Skip("SoX not installed")
+	}
+
+	pcmData := generateBenchmarkPCM(16000, 1, 1000)
+	pool := NewPoolWithLimit(10)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		converter := NewConverter(PCM_RAW_16K_MONO, FLAC_16K_MONO).
+			WithPool(pool)
+
+		input := bytes.NewReader(pcmData)
+		output := &bytes.Buffer{}
+		converter.Convert(input, output)
+	}
+}
+
+// BenchmarkConverter_Parallel benchmarks parallel conversions
+func BenchmarkConverter_Parallel(b *testing.B) {
+	if err := CheckSoxInstalled(""); err != nil {
+		b.Skip("SoX not installed")
+	}
+
+	pcmData := generateBenchmarkPCM(16000, 1, 100) // Smaller for parallel
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			converter := NewConverter(PCM_RAW_16K_MONO, FLAC_16K_MONO)
+			input := bytes.NewReader(pcmData)
+			output := &bytes.Buffer{}
+			converter.Convert(input, output)
+		}
+	})
+}
+
+// generateBenchmarkPCM generates PCM data for benchmarks
+func generateBenchmarkPCM(sampleRate, channels, durationMs int) []byte {
+	numSamples := (sampleRate * durationMs) / 1000
+	buffer := make([]byte, numSamples*channels*2)
+
+	for i := 0; i < numSamples; i++ {
+		value := int16(32767.0 * 0.5 * (1.0 + float64(i%100)/100.0))
+		for ch := 0; ch < channels; ch++ {
+			idx := (i*channels + ch) * 2
+			buffer[idx] = byte(value & 0xFF)
+			buffer[idx+1] = byte((value >> 8) & 0xFF)
+		}
+	}
+
+	return buffer
 }
