@@ -1,5 +1,8 @@
 # go-sox
 
+![Build Status](https://github.com/thadeu/go-sox/actions/workflows/go-test.yml/badge.svg)
+[![Go Reference](https://pkg.go.dev/badge/github.com/thadeu/go-sox.svg)](https://pkg.go.dev/github.com/thadeu/go-sox)
+
 High-performance Go wrapper for SoX CLI using pipes and streams for audio format conversion.
 
 ## Overview
