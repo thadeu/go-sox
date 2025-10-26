@@ -38,13 +38,23 @@ go get github.com/thadeu/go-sox
 
 ## Usage
 
-### One-Shot Conversion
+### Basic Usage
 
 ```go
 import sox "github.com/thadeu/go-sox"
 
+// NewConverter is resilient by default (includes circuit breaker & retry)
 converter := sox.NewConverter(sox.PCM_RAW_16K_MONO, sox.FLAC_16K_MONO)
 err := converter.Convert(inputReader, outputWriter)
+
+// Add worker pool (creates default pool if no arg)
+converter := sox.NewConverter(input, output).
+    WithPool() // Creates pool with SOX_MAX_WORKERS (default: 500)
+
+// Or use custom pool
+pool := sox.NewPool()
+converter := sox.NewConverter(input, output).
+    WithPool(pool)
 ```
 
 ### Streaming Conversion
@@ -67,21 +77,20 @@ flacData, err := stream.Flush()
 ### Production Example: RTP to Transcription
 
 ```go
-type AudioHandler struct {
-    stream *sox.StreamConverter
-}
-
-func (h *AudioHandler) ProcessRTPPacket(pcmData []byte) error {
-    _, err := h.stream.Write(pcmData)
-    if h.accumulated >= threshold {
-        flacData, _ := h.stream.Flush()
-        go sendToWhisper(flacData)
-        
-        // Reset for next batch
-        h.stream = sox.NewStreamConverter(sox.PCM_RAW_16K_MONO, sox.FLAC_16K_MONO)
-        h.stream.Start()
+func ProcessRTPBatch(pcmData []byte) error {
+    // WithPool() creates default pool automatically
+    converter := sox.NewConverter(sox.PCM_RAW_16K_MONO, sox.FLAC_16K_MONO).
+        WithPool()
+    
+    input := bytes.NewReader(pcmData)
+    output := &bytes.Buffer{}
+    
+    // Automatic retry + circuit breaker + pool concurrency control
+    if err := converter.Convert(input, output); err != nil {
+        return err
     }
-    return err
+    
+    return sendToWhisper(output.Bytes())
 }
 ```
 
@@ -107,13 +116,107 @@ opts.Effects = []string{"norm"} // SoX effects chain
 converter.WithOptions(opts)
 ```
 
+## Production Features
+
+**NewConverter is production-ready by default** - includes circuit breaker, retry, and timeout support.
+
+### Worker Pool
+
+Limit concurrent SoX processes to prevent resource exhaustion:
+
+```go
+// Option 1: Let converter create default pool
+converter := sox.NewConverter(input, output).
+    WithPool() // Creates pool with SOX_MAX_WORKERS (default: 500)
+
+// Option 2: Share pool across multiple converters
+pool := sox.NewPool() // or NewPoolWithLimit(100)
+converter1 := sox.NewConverter(input1, output1).WithPool(pool)
+converter2 := sox.NewConverter(input2, output2).WithPool(pool)
+```
+
+### Customizing Resiliency
+
+Defaults are production-ready, but you can customize:
+
+```go
+converter := sox.NewConverter(input, output).
+    WithRetryConfig(sox.RetryConfig{
+        MaxAttempts:     3,
+        InitialBackoff:  100 * time.Millisecond,
+        MaxBackoff:      5 * time.Second,
+        BackoffMultiple: 2.0,
+    }).
+    WithCircuitBreaker(sox.NewCircuitBreakerWithConfig(
+        5,                  // maxFailures
+        10 * time.Second,   // resetTimeout  
+        3,                  // halfOpenRequests
+    )).
+    WithPool(pool)
+```
+
+### Disabling Resiliency (not recommended)
+
+```go
+converter := sox.NewConverter(input, output).
+    DisableResilience()
+```
+
+### Resource Monitoring
+
+Track active processes and conversion statistics:
+
+```go
+monitor := sox.GetMonitor()
+stats := monitor.GetStats()
+
+fmt.Printf("Active processes: %d\n", stats.ActiveProcesses)
+fmt.Printf("Success rate: %.2f%%\n", stats.SuccessRate)
+fmt.Printf("Total conversions: %d\n", stats.TotalConversions)
+```
+
+### Timeout Support
+
+Prevent hung conversions:
+
+```go
+opts := sox.DefaultOptions()
+opts.Timeout = 10 * time.Second
+converter.WithOptions(opts)
+
+// Or use context
+ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+defer cancel()
+converter.ConvertWithContext(ctx, input, output)
+```
+
 ## Testing
 
 ```bash
 go test -v              # Run tests
 go test -bench=.        # Run benchmarks
+go test -v -run TestPooled  # Test concurrent load
 make test              # Using Makefile
 ```
+
+## Production Deployment
+
+For high-load scenarios (100+ parallel conversions), you must configure system limits:
+
+```bash
+# Set worker pool limit
+export SOX_MAX_WORKERS=500
+
+# Increase Linux ulimits (see PRODUCTION.md)
+ulimit -n 65536  # File descriptors
+ulimit -u 4096   # Processes
+```
+
+See [PRODUCTION.md](PRODUCTION.md) for detailed deployment instructions including:
+- Linux ulimit persistence across reboots
+- Docker/Kubernetes configuration
+- Systemd service limits
+- Monitoring and troubleshooting
 
 ## Requirements
 

@@ -1,10 +1,10 @@
 .PHONY: test bench example clean install-sox
 
 test:
-	go test -v -cover
+	go test ./... -v -cover
 
 bench:
-	go test -bench=. -benchmem
+	go test ./... -bench=. -benchmem
 
 example:
 	cd examples && go run rtp_to_flac.go

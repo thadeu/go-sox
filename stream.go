@@ -84,6 +84,9 @@ func (s *StreamConverter) Start() error {
 		return fmt.Errorf("failed to start sox: %w", err)
 	}
 
+	// Track process
+	GetMonitor().TrackProcess(s.cmd.Process.Pid)
+
 	// Start goroutine to read stdout continuously
 	s.readDone = make(chan error, 1)
 	go s.readOutput()
@@ -141,7 +144,13 @@ func (s *StreamConverter) Flush() ([]byte, error) {
 	// Wait for process to exit
 	if err := s.cmd.Wait(); err != nil {
 		stderrData, _ := io.ReadAll(s.stderr)
+		GetMonitor().RecordFailure()
 		return nil, fmt.Errorf("sox process failed: %w\nstderr: %s", err, string(stderrData))
+	}
+
+	// Untrack process
+	if s.cmd.Process != nil {
+		GetMonitor().UntrackProcess(s.cmd.Process.Pid)
 	}
 
 	if readErr != nil && readErr != io.EOF {
@@ -174,6 +183,7 @@ func (s *StreamConverter) Close() error {
 	// Kill the process if still running
 	if s.cmd.Process != nil {
 		_ = s.cmd.Process.Kill()
+		GetMonitor().UntrackProcess(s.cmd.Process.Pid)
 	}
 
 	s.closed = true

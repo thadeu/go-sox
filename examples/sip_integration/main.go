@@ -1,4 +1,4 @@
-package sip_integration
+package main
 
 import (
 	"fmt"

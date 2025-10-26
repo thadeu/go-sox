@@ -1,4 +1,4 @@
-package examples_rtp_to_flac
+package main
 
 import (
 	"bytes"

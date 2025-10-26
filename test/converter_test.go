@@ -5,6 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"testing"
+
+	. "github.com/thadeu/go-sox"
 )
 
 // TestCheckSoxInstalled verifies that SoX is installed

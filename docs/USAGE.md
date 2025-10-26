@@ -141,7 +141,7 @@ go run sip_integration.go    # RTP handler pattern
 ## Testing
 
 ```bash
-go test -v              # Run tests
-go test -bench=.        # Run benchmarks
+go test -v ./...              # Run tests
+go test -bench=. ./...        # Run benchmarks
 ```
 

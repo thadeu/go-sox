@@ -1,6 +1,9 @@
 package sox
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // ConversionOptions provides additional options for audio conversion
 type ConversionOptions struct {
@@ -26,6 +29,9 @@ type ConversionOptions struct {
 
 	// Verbose enables verbose output from SoX for debugging
 	Verbose bool
+
+	// Timeout sets maximum duration for conversion (0 = no timeout)
+	Timeout time.Duration
 }
 
 // DefaultOptions returns ConversionOptions with sensible defaults
