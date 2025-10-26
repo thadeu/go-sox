@@ -2,6 +2,7 @@ package sox
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os/exec"
@@ -15,6 +16,12 @@ type StreamConverter struct {
 	Output  AudioFormat
 	Options ConversionOptions
 
+	// Optional pool for concurrency control
+	pool *Pool
+
+	// Optional output path (if empty, uses stdout)
+	outputPath string
+
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
 	stdout io.ReadCloser
@@ -26,6 +33,8 @@ type StreamConverter struct {
 	readDone chan error
 	started  bool
 	closed   bool
+	acquired bool
+	mu       sync.Mutex
 }
 
 // NewStreamConverter creates a new StreamConverter
@@ -38,23 +47,76 @@ func NewStreamConverter(input, output AudioFormat) *StreamConverter {
 	}
 }
 
+// WithPool enables pool-based concurrency control
+func (s *StreamConverter) WithPool(pool ...*Pool) *StreamConverter {
+	if len(pool) > 0 {
+		s.pool = pool[0]
+	} else {
+		s.pool = NewPool() // Default pool
+	}
+	return s
+}
+
+// WithOutputPath sets the output file path (if empty, uses stdout)
+func (s *StreamConverter) WithOutputPath(path string) *StreamConverter {
+	s.outputPath = path
+	return s
+}
+
 // WithOptions sets custom conversion options
 func (s *StreamConverter) WithOptions(opts ConversionOptions) *StreamConverter {
 	s.Options = opts
 	return s
 }
 
+func (s *StreamConverter) WithAutoStart(ctx ...context.Context) *StreamConverter {
+	s.Start(ctx...)
+
+	return s
+}
+
+// releasePool releases the pool slot if acquired
+func (s *StreamConverter) releasePool() {
+	s.mu.Lock()
+	if s.acquired && s.pool != nil {
+		s.pool.Release()
+		s.acquired = false
+	}
+	s.mu.Unlock()
+}
+
 // Start initializes and starts the SoX process
-func (s *StreamConverter) Start() error {
+func (s *StreamConverter) Start(ctx ...context.Context) error {
 	if s.started {
 		return fmt.Errorf("stream converter already started")
 	}
 
+	// Acquire pool slot if using pool
+	if s.pool != nil {
+		var streamCtx context.Context
+
+		if len(ctx) > 0 {
+			streamCtx = ctx[0]
+		} else {
+			streamCtx = context.Background()
+		}
+
+		if err := s.pool.Acquire(streamCtx); err != nil {
+			return fmt.Errorf("failed to acquire worker slot: %w", err)
+		}
+
+		s.mu.Lock()
+		s.acquired = true
+		s.mu.Unlock()
+	}
+
 	// Validate formats
 	if err := s.Input.Validate(); err != nil {
+		s.releasePool()
 		return fmt.Errorf("invalid input format: %w", err)
 	}
 	if err := s.Output.Validate(); err != nil {
+		s.releasePool()
 		return fmt.Errorf("invalid output format: %w", err)
 	}
 
@@ -66,30 +128,39 @@ func (s *StreamConverter) Start() error {
 	var err error
 	s.stdin, err = s.cmd.StdinPipe()
 	if err != nil {
+		s.releasePool()
 		return fmt.Errorf("failed to create stdin pipe: %w", err)
 	}
 
-	s.stdout, err = s.cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("failed to create stdout pipe: %w", err)
+	// Only set up stdout pipe if not writing to file
+	if s.outputPath == "" {
+		s.stdout, err = s.cmd.StdoutPipe()
+		if err != nil {
+			s.releasePool()
+			return fmt.Errorf("failed to create stdout pipe: %w", err)
+		}
 	}
 
 	s.stderr, err = s.cmd.StderrPipe()
 	if err != nil {
+		s.releasePool()
 		return fmt.Errorf("failed to create stderr pipe: %w", err)
 	}
 
 	// Start the command
 	if err := s.cmd.Start(); err != nil {
+		s.releasePool()
 		return fmt.Errorf("failed to start sox: %w", err)
 	}
 
 	// Track process
 	GetMonitor().TrackProcess(s.cmd.Process.Pid)
 
-	// Start goroutine to read stdout continuously
-	s.readDone = make(chan error, 1)
-	go s.readOutput()
+	// Start goroutine to read stdout continuously (only if not writing to file)
+	if s.outputPath == "" {
+		s.readDone = make(chan error, 1)
+		go s.readOutput()
+	}
 
 	s.started = true
 	return nil
@@ -135,16 +206,37 @@ func (s *StreamConverter) Flush() ([]byte, error) {
 
 	// Close stdin to signal end of input
 	if err := s.stdin.Close(); err != nil {
+		s.releasePool()
 		return nil, fmt.Errorf("failed to close stdin: %w", err)
 	}
 
-	// Wait for reading to complete
+	// If writing to file, just wait for process to complete
+	if s.outputPath != "" {
+		if err := s.cmd.Wait(); err != nil {
+			stderrData, _ := io.ReadAll(s.stderr)
+			GetMonitor().RecordFailure()
+			s.releasePool()
+			return nil, fmt.Errorf("sox process failed: %w\nstderr: %s", err, string(stderrData))
+		}
+
+		// Untrack process
+		if s.cmd.Process != nil {
+			GetMonitor().UntrackProcess(s.cmd.Process.Pid)
+		}
+
+		s.closed = true
+		s.releasePool()
+		return nil, nil // No data to return when writing to file
+	}
+
+	// Wait for reading to complete (stdout mode)
 	readErr := <-s.readDone
 
 	// Wait for process to exit
 	if err := s.cmd.Wait(); err != nil {
 		stderrData, _ := io.ReadAll(s.stderr)
 		GetMonitor().RecordFailure()
+		s.releasePool()
 		return nil, fmt.Errorf("sox process failed: %w\nstderr: %s", err, string(stderrData))
 	}
 
@@ -154,10 +246,12 @@ func (s *StreamConverter) Flush() ([]byte, error) {
 	}
 
 	if readErr != nil && readErr != io.EOF {
+		s.releasePool()
 		return nil, fmt.Errorf("error reading output: %w", readErr)
 	}
 
 	s.closed = true
+	s.releasePool()
 
 	// Return all buffered data
 	s.bufferLock.Lock()
@@ -187,6 +281,7 @@ func (s *StreamConverter) Close() error {
 	}
 
 	s.closed = true
+	s.releasePool()
 	return nil
 }
 
@@ -226,8 +321,12 @@ func (s *StreamConverter) buildCommandArgs() []string {
 	// Format-specific arguments for output
 	args = append(args, s.Options.buildFormatArgs(&s.Output)...)
 
-	// Output file (stdout)
-	args = append(args, "-")
+	// Output file (stdout or file path)
+	if s.outputPath != "" {
+		args = append(args, s.outputPath)
+	} else {
+		args = append(args, "-")
+	}
 
 	// Effects
 	if effects := s.Options.buildEffectArgs(); len(effects) > 0 {
