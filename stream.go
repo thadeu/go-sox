@@ -389,7 +389,7 @@ func (s *StreamConverter) Flush() ([]byte, error) {
 	data := s.buffer.Bytes()
 	s.bufferLock.Unlock()
 
-	isIncrementalWithHeader := s.Output.Encoding == "flac" || s.Output.Encoding == "wav"
+	isIncrementalWithHeader := s.Output.Type == "flac" || s.Output.Type == "wav"
 
 	// If in incremental mode, write final data and close file
 	if s.incrementalFlush && s.outputFile != nil {
