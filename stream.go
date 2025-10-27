@@ -29,10 +29,11 @@ type StreamConverter struct {
 	flushInterval     time.Duration
 	flushTicker       *time.Ticker
 	flushStopChan     chan bool
-	incrementalFlush  bool       // enable incremental flush mode
-	outputFile        *os.File   // file handle for incremental writes
-	outputFileLock    sync.Mutex // protect file writes
-	lastFlushPosition int        // track how many bytes already flushed incrementally
+	flushWaitGroup    sync.WaitGroup // wait for autoFlushLoop to finish
+	incrementalFlush  bool           // enable incremental flush mode
+	outputFile        *os.File       // file handle for incremental writes
+	outputFileLock    sync.Mutex     // protect file writes
+	lastFlushPosition int            // track how many bytes already flushed incrementally
 
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
@@ -203,6 +204,7 @@ func (s *StreamConverter) Start(ctx ...context.Context) error {
 	if s.autoFlush && s.flushInterval > 0 {
 		s.flushStopChan = make(chan bool)
 		s.flushTicker = time.NewTicker(s.flushInterval)
+		s.flushWaitGroup.Add(1)
 		go s.autoFlushLoop()
 	}
 
@@ -241,6 +243,8 @@ func (s *StreamConverter) Available() int {
 
 // autoFlushLoop runs in a goroutine and performs incremental flush periodically
 func (s *StreamConverter) autoFlushLoop() {
+	defer s.flushWaitGroup.Done() // Signal completion when goroutine exits
+
 	for {
 		select {
 		case <-s.flushTicker.C:
@@ -262,20 +266,32 @@ func (s *StreamConverter) autoFlushLoop() {
 	}
 }
 
-// stopAutoFlush stops the auto-flush ticker
+// stopAutoFlush stops the auto-flush ticker and waits for completion
 func (s *StreamConverter) stopAutoFlush() {
 	if s.autoFlush && s.flushStopChan != nil {
+		// Stop the ticker first to prevent new ticks
+		if s.flushTicker != nil {
+			s.flushTicker.Stop()
+		}
+		// Signal the goroutine to stop
 		close(s.flushStopChan)
 		s.flushStopChan = nil
+
+		// Wait for the goroutine to finish completely
+		s.flushWaitGroup.Wait()
 	}
 }
 
 // writeAvailableData writes all available buffered data to output file
 // without closing the SoX process. Returns bytes written.
 func (s *StreamConverter) writeAvailableData() (int, error) {
-	if s.outputFile == nil {
-		return 0, fmt.Errorf("output file not opened")
+	// Check if stream is closed or output file is not available
+	s.mu.Lock()
+	if s.closed || s.outputFile == nil {
+		s.mu.Unlock()
+		return 0, nil // Don't write if closed or no file
 	}
+	s.mu.Unlock()
 
 	s.bufferLock.Lock()
 	bufferData := s.buffer.Bytes()
@@ -296,6 +312,12 @@ func (s *StreamConverter) writeAvailableData() (int, error) {
 	}
 
 	s.outputFileLock.Lock()
+	// Double-check if file is still available after acquiring lock
+	if s.outputFile == nil {
+		s.outputFileLock.Unlock()
+		return 0, nil
+	}
+
 	written, err := s.outputFile.Write(newData)
 	if err != nil {
 		s.outputFileLock.Unlock()
@@ -451,6 +473,7 @@ func (s *StreamConverter) Close() error {
 		}
 		s.outputFile.Sync()
 		s.outputFile.Close()
+		s.outputFile = nil // Clear the file handle
 		s.outputFileLock.Unlock()
 	}
 
