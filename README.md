@@ -140,6 +140,53 @@ opts.Effects = []string{"norm"} // SoX effects chain
 converter.WithOptions(opts)
 ```
 
+### Advanced Options
+
+go-sox supports all SoX format and global options without discriminating file types. This gives you complete flexibility:
+
+```go
+// Extended format options
+input := sox.AudioFormat{
+    Type:         "raw",
+    Encoding:     "signed-integer",
+    SampleRate:   16000,
+    Channels:     1,
+    BitDepth:     16,
+    Volume:       1.5,     // -v|--volume FACTOR
+    IgnoreLength: true,    // --ignore-length
+    Endian:       "little", // --endian little|big|swap
+}
+
+output := sox.AudioFormat{
+    Type:        "flac",
+    SampleRate:  16000,
+    Channels:    1,
+    BitDepth:    16,
+    Compression: 8.0,   // -C|--compression FACTOR
+    Comment:     "Metadata", // --comment TEXT
+}
+
+// Global options
+options := sox.ConversionOptions{
+    Buffer:       16384,  // --buffer BYTES
+    NoDither:     true,   // -D|--no-dither
+    Guard:        true,   // -G|--guard
+    Norm:         true,   // --norm
+    SingleThreaded: false, // --single-threaded
+    VerbosityLevel: 3,    // -V[LEVEL]
+}
+
+// Full flexibility with CustomArgs
+format := sox.AudioFormat{
+    Type:       "flac",
+    CustomArgs: []string{"--add-comment", "Custom metadata"},
+}
+
+converter := sox.NewConverter(input, output).WithOptions(options)
+```
+
+See [ADVANCED_OPTIONS.md](docs/ADVANCED_OPTIONS.md) for complete documentation on all available options.
+
 ## Production Features
 
 **NewConverter is production-ready by default** - includes circuit breaker, retry, and timeout support.

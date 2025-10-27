@@ -348,16 +348,16 @@ func (s *StreamConverter) buildCommandArgs() []string {
 	args := []string{}
 
 	// Global options
-	args = append(args, s.Options.buildGlobalArgs()...)
+	args = append(args, s.Options.BuildGlobalArgs()...)
 
 	// Input format arguments
-	args = append(args, s.Input.buildArgs(true)...)
+	args = append(args, s.Input.BuildArgs(true)...)
 
 	// Input file (stdin)
 	args = append(args, "-")
 
 	// Output format arguments
-	args = append(args, s.Output.buildArgs(false)...)
+	args = append(args, s.Output.BuildArgs(false)...)
 
 	// Format-specific arguments for output
 	args = append(args, s.Options.buildFormatArgs(&s.Output)...)

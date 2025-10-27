@@ -65,7 +65,7 @@ func (s *ConverterTestSuite) TestAudioFormatValidate() {
 			wantErr: false,
 		},
 		{
-			name: "invalid raw format - no encoding",
+			name: "invalid raw format - no encoding and no CustomArgs",
 			format: AudioFormat{
 				Type:       "raw",
 				SampleRate: 16000,
@@ -74,17 +74,34 @@ func (s *ConverterTestSuite) TestAudioFormatValidate() {
 			wantErr: true,
 		},
 		{
-			name: "invalid raw format - no sample rate",
+			name: "valid raw format with CustomArgs",
 			format: AudioFormat{
-				Type:     "raw",
-				Encoding: "signed-integer",
-				Channels: 1,
+				Type:       "raw",
+				SampleRate: 16000,
+				Channels:   1,
+				CustomArgs: []string{"-e", "signed-integer", "-b", "16"},
 			},
-			wantErr: true,
+			wantErr: false,
 		},
 		{
 			name:    "valid flac format",
 			format:  FLAC_16K_MONO,
+			wantErr: false,
+		},
+		{
+			name: "invalid endian value",
+			format: AudioFormat{
+				Type:   "flac",
+				Endian: "invalid",
+			},
+			wantErr: true,
+		},
+		{
+			name: "valid endian value - little",
+			format: AudioFormat{
+				Type:   "flac",
+				Endian: "little",
+			},
 			wantErr: false,
 		},
 	}
