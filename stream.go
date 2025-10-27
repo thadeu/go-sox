@@ -427,6 +427,11 @@ func (s *StreamConverter) Close() error {
 	// Stop auto-flush ticker if running
 	s.stopAutoFlush()
 
+	// If using incremental flush, write any remaining data before closing stdin
+	if s.incrementalFlush && s.outputFile != nil {
+		s.writeAvailableData()
+	}
+
 	// Close stdin to signal end of input
 	if s.stdin != nil {
 		_ = s.stdin.Close()
