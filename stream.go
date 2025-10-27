@@ -390,7 +390,6 @@ func (s *StreamConverter) Flush() ([]byte, error) {
 	s.bufferLock.Unlock()
 
 	isIncrementalWithHeader := s.Output.Encoding == "flac" || s.Output.Encoding == "wav"
-	headerFixer := NewConverter(s.Output, s.Output).WithOptions(s.Options)
 
 	// If in incremental mode, write final data and close file
 	if s.incrementalFlush && s.outputFile != nil {
@@ -409,7 +408,7 @@ func (s *StreamConverter) Flush() ([]byte, error) {
 		// Fix the header with proper duration
 		// Only apply header fix for formats that support it (FLAC, WAV, etc.)
 		if isIncrementalWithHeader {
-			if err := headerFixer.ConvertFile(s.outputPath, s.outputPath); err != nil {
+			if err := s.fixAudioHeader(s.outputPath); err != nil {
 				return nil, fmt.Errorf("failed to fix output file header: %w", err)
 			}
 		}
@@ -427,7 +426,7 @@ func (s *StreamConverter) Flush() ([]byte, error) {
 		// Fix the header with proper duration for non-incremental mode too
 		// Only apply header fix for formats that support it (FLAC, WAV, etc.)
 		if isIncrementalWithHeader {
-			if err := headerFixer.ConvertFile(s.outputPath, s.outputPath); err != nil {
+			if err := s.fixAudioHeader(s.outputPath); err != nil {
 				return nil, fmt.Errorf("failed to fix output file header: %w", err)
 			}
 		}
@@ -557,4 +556,53 @@ func (s *StreamConverter) buildCommandArgs() []string {
 	}
 
 	return args
+}
+
+// fixAudioHeader fixes the audio file header using SoX command directly
+// This is more reliable than ConvertFile for fixing headers of incrementally written files
+func (s *StreamConverter) fixAudioHeader(filePath string) error {
+	// Create temporary file for the fixed version
+	tempPath := filePath + ".tmp"
+
+	// Build SoX command to fix header: sox input.flac output.flac
+	args := []string{}
+
+	// Global options
+	args = append(args, s.Options.BuildGlobalArgs()...)
+
+	// Input format (read the existing file as its own format)
+	if s.Output.Type == "flac" {
+		args = append(args, "-t", "flac")
+	} else if s.Output.Type == "wav" {
+		args = append(args, "-t", "wav")
+	}
+
+	// Input file
+	args = append(args, filePath)
+
+	// Output format (same as input)
+	if s.Output.Type == "flac" {
+		args = append(args, "-t", "flac")
+	} else if s.Output.Type == "wav" {
+		args = append(args, "-t", "wav")
+	}
+
+	// Output file
+	args = append(args, tempPath)
+
+	// Execute SoX command
+	cmd := exec.Command(s.Options.SoxPath, args...)
+	if err := cmd.Run(); err != nil {
+		// Clean up temp file if it exists
+		os.Remove(tempPath)
+		return fmt.Errorf("sox header fix failed: %w", err)
+	}
+
+	// Replace original file with fixed version
+	if err := os.Rename(tempPath, filePath); err != nil {
+		os.Remove(tempPath)
+		return fmt.Errorf("failed to replace file with fixed version: %w", err)
+	}
+
+	return nil
 }
