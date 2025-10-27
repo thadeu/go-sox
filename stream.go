@@ -480,6 +480,15 @@ func (s *StreamConverter) Close() error {
 		s.outputFile.Close()
 		s.outputFile = nil // Clear the file handle
 		s.outputFileLock.Unlock()
+
+		// Fix WAV headers if using WAV format
+		if s.Output.Type == "wav" {
+			err := s.fixWAVHeaders(s.outputPath)
+			if err != nil {
+				// Log error but don't fail the close operation
+				fmt.Fprintf(os.Stderr, "Warning: failed to fix WAV headers: %v\n", err)
+			}
+		}
 	}
 
 	s.closed = true
@@ -533,4 +542,29 @@ func (s *StreamConverter) buildCommandArgs() []string {
 	}
 
 	return args
+}
+
+// fixWAVHeaders corrects WAV file headers using SoX to ensure proper duration
+func (s *StreamConverter) fixWAVHeaders(filePath string) error {
+	// Create temporary file for corrected WAV
+	tempPath := filePath + ".tmp"
+
+	// Use SoX to rewrite the file with correct headers
+	converter := NewConverter(s.Input, s.Output)
+	err := converter.ConvertFile(filePath, tempPath)
+	if err != nil {
+		// Clean up temp file if conversion failed
+		os.Remove(tempPath)
+		return fmt.Errorf("failed to fix WAV headers: %w", err)
+	}
+
+	// Replace original file with corrected one
+	err = os.Rename(tempPath, filePath)
+	if err != nil {
+		// Clean up temp file if rename failed
+		os.Remove(tempPath)
+		return fmt.Errorf("failed to replace WAV file: %w", err)
+	}
+
+	return nil
 }
