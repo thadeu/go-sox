@@ -93,35 +93,6 @@ func (s *StreamConverterTestSuite) TestWithOutputPath() {
 	s.T().Logf("Created file %s with size %d bytes", outputPath, fileInfo.Size())
 }
 
-// TestAutoFlush tests auto-flush functionality
-func (s *StreamConverterTestSuite) TestAutoFlush() {
-	outputPath := filepath.Join(s.tmpDir, "test_autoflush.flac")
-
-	stream := NewStreamConverter(PCM_RAW_16K_MONO, FLAC_16K_MONO).
-		WithOutputPath(outputPath).
-		WithAutoFlush(1 * time.Second)
-
-	require.NoError(s.T(), stream.Start())
-
-	// Write data for 500ms
-	for i := 0; i < 10; i++ {
-		chunk := s.generatePCMData(16000, 50) // 50ms chunks
-		_, err := stream.Write(chunk)
-		require.NoError(s.T(), err)
-		time.Sleep(50 * time.Millisecond)
-	}
-
-	// Wait for auto-flush
-	time.Sleep(1500 * time.Millisecond)
-
-	// Verify file exists
-	fileInfo, err := os.Stat(outputPath)
-	require.NoError(s.T(), err, "Auto-flush did not create file")
-	assert.Greater(s.T(), fileInfo.Size(), int64(0), "Auto-flushed file is empty")
-
-	s.T().Logf("Auto-flush created file with size %d bytes", fileInfo.Size())
-}
-
 // TestBufferAccumulation tests that buffer accumulates all data
 func (s *StreamConverterTestSuite) TestBufferAccumulation() {
 	outputPath := filepath.Join(s.tmpDir, "test_accumulation.flac")
@@ -315,6 +286,98 @@ func (s *StreamConverterTestSuite) TestStdoutMode() {
 	assert.True(s.T(), bytes.HasPrefix(data, []byte("fLaC")), "Output doesn't appear to be valid FLAC")
 
 	s.T().Logf("Stdout mode: %d bytes FLAC", len(data))
+}
+
+// TestIncrementalFlush tests incremental flush functionality
+func (s *StreamConverterTestSuite) TestIncrementalFlush() {
+	outputPath := filepath.Join(s.tmpDir, "test_incremental.flac")
+
+	stream := NewStreamConverter(PCM_RAW_16K_MONO, FLAC_16K_MONO).
+		WithOutputPath(outputPath).
+		WithAutoFlush(1 * time.Second)
+
+	require.NoError(s.T(), stream.Start())
+
+	// Write substantial data to ensure SoX has enough to process
+	totalChunks := 5
+	for i := 0; i < totalChunks; i++ {
+		chunk := s.generatePCMData(16000, 1000) // 1 second chunks
+		_, err := stream.Write(chunk)
+		require.NoError(s.T(), err)
+
+		// Wait for potential incremental flush
+		time.Sleep(1200 * time.Millisecond)
+
+		// Check file status
+		fileInfo, err := os.Stat(outputPath)
+		require.NoError(s.T(), err, "File should exist after write %d", i+1)
+		s.T().Logf("After write %d: file size %d bytes", i+1, fileInfo.Size())
+	}
+
+	// Final flush
+	_, err := stream.Flush()
+	require.NoError(s.T(), err)
+
+	// Verify final file size
+	fileInfo, err := os.Stat(outputPath)
+	require.NoError(s.T(), err)
+	assert.Greater(s.T(), fileInfo.Size(), int64(1000), "Final file should be substantial")
+
+	s.T().Logf("Incremental flush test completed: final size %d bytes", fileInfo.Size())
+}
+
+// TestIncrementalFlushWithoutOutputPath tests that WithAutoFlush requires WithOutputPath
+func (s *StreamConverterTestSuite) TestIncrementalFlushWithoutOutputPath() {
+	stream := NewStreamConverter(PCM_RAW_16K_MONO, FLAC_16K_MONO).
+		WithAutoFlush(500 * time.Millisecond) // No WithOutputPath
+
+	// Should fail to start because WithAutoFlush requires WithOutputPath
+	err := stream.Start()
+	assert.Error(s.T(), err, "Should fail to start WithAutoFlush without WithOutputPath")
+	assert.Contains(s.T(), err.Error(), "WithAutoFlush requires WithOutputPath")
+
+	s.T().Log("WithAutoFlush correctly requires WithOutputPath")
+}
+
+// TestIncrementalFlushRealWorld tests real-world usage pattern
+func (s *StreamConverterTestSuite) TestIncrementalFlushRealWorld() {
+	outputPath := filepath.Join(s.tmpDir, "test_realworld.flac")
+
+	stream := NewStreamConverter(PCM_RAW_16K_MONO, FLAC_16K_MONO).
+		WithOutputPath(outputPath).
+		WithAutoFlush(3 * time.Second) // Real-world interval
+
+	require.NoError(s.T(), stream.Start())
+
+	// Simulate RTP packet streaming
+	packetCount := 0
+	for i := 0; i < 20; i++ {
+		// Simulate RTP packet (small chunks)
+		chunk := s.generatePCMData(16000, 100) // 100ms chunks
+		_, err := stream.Write(chunk)
+		require.NoError(s.T(), err)
+		packetCount++
+
+		// Check file periodically
+		if i%5 == 0 {
+			fileInfo, err := os.Stat(outputPath)
+			require.NoError(s.T(), err)
+			s.T().Logf("After %d packets: file size %d bytes", packetCount, fileInfo.Size())
+		}
+
+		time.Sleep(50 * time.Millisecond) // Simulate packet interval
+	}
+
+	// Final flush
+	_, err := stream.Flush()
+	require.NoError(s.T(), err)
+
+	// Verify final result
+	fileInfo, err := os.Stat(outputPath)
+	require.NoError(s.T(), err)
+	assert.Greater(s.T(), fileInfo.Size(), int64(1000), "Final file should be substantial")
+
+	s.T().Logf("Real-world test: %d packets -> %d bytes FLAC", packetCount, fileInfo.Size())
 }
 
 // TestErrorHandling tests error scenarios

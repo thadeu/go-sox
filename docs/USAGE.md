@@ -38,6 +38,35 @@ stream.Write(rtpPacket2)
 flacData, err := stream.Flush()
 ```
 
+### Streaming with Auto-Flush (Real-time Processing)
+
+For scenarios where you need to read the output file while it's being written (e.g., real-time transcription):
+
+```go
+stream := sox.NewStreamConverter(sox.PCM_RAW_16K_MONO, sox.FLAC_16K_MONO).
+    WithOutputPath("output.flac").
+    WithAutoFlush(3 * time.Second)  // Flush every 3 seconds
+
+stream.Start()
+
+// Write RTP packets continuously
+for {
+    stream.Write(rtpPacket)
+    // File grows incrementally - other processes can read it
+}
+
+// Final flush when done
+stream.Flush()
+```
+
+**Key Benefits:**
+- File grows incrementally every 3 seconds
+- Other processes can read the file while it's being written
+- SoX process stays alive for continuous streaming
+- Perfect for real-time transcription pipelines
+
+**Note:** `WithAutoFlush` requires `WithOutputPath` to be set.
+
 ## Format Presets
 
 - `PCM_RAW_8K_MONO` - 8kHz mono PCM (telephony)

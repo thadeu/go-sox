@@ -25,10 +25,14 @@ type StreamConverter struct {
 	outputPath string
 
 	// Auto-flush configuration
-	autoFlush     bool
-	flushInterval time.Duration
-	flushTicker   *time.Ticker
-	flushStopChan chan bool
+	autoFlush         bool
+	flushInterval     time.Duration
+	flushTicker       *time.Ticker
+	flushStopChan     chan bool
+	incrementalFlush  bool       // enable incremental flush mode
+	outputFile        *os.File   // file handle for incremental writes
+	outputFileLock    sync.Mutex // protect file writes
+	lastFlushPosition int        // track how many bytes already flushed incrementally
 
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
@@ -77,7 +81,9 @@ func (s *StreamConverter) WithAutoStart(ctx ...context.Context) *StreamConverter
 	return s
 }
 
-// WithAutoFlush enables automatic periodic flushing
+// WithAutoFlush enables automatic incremental flushing
+// Requires WithOutputPath to be set - writes accumulated data to file every interval
+// while keeping the SoX process running for continuous streaming
 func (s *StreamConverter) WithAutoFlush(interval time.Duration) *StreamConverter {
 	s.autoFlush = true
 	s.flushInterval = interval
@@ -162,6 +168,24 @@ func (s *StreamConverter) Start(ctx ...context.Context) error {
 		return fmt.Errorf("failed to create stderr pipe: %w", err)
 	}
 
+	// If auto-flush is enabled, use incremental mode (requires output path)
+	if s.autoFlush {
+		if s.outputPath == "" {
+			s.releasePool()
+			return fmt.Errorf("WithAutoFlush requires WithOutputPath to be set")
+		}
+
+		s.incrementalFlush = true
+
+		// Open file for incremental writing
+		var err error
+		s.outputFile, err = os.OpenFile(s.outputPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+		if err != nil {
+			s.releasePool()
+			return fmt.Errorf("failed to open output file: %w", err)
+		}
+	}
+
 	// Start the command
 	if err := s.cmd.Start(); err != nil {
 		s.releasePool()
@@ -215,14 +239,21 @@ func (s *StreamConverter) Available() int {
 	return s.buffer.Len()
 }
 
-// autoFlushLoop runs in a goroutine and calls Flush() periodically
+// autoFlushLoop runs in a goroutine and performs incremental flush periodically
 func (s *StreamConverter) autoFlushLoop() {
 	for {
 		select {
 		case <-s.flushTicker.C:
-			// Auto-flush: closes current process and saves data
-			s.Flush()
-			return // Stop after flush
+			// Incremental flush: write available data without closing stream
+			written, err := s.writeAvailableData()
+			if err != nil {
+				// Log error but continue streaming
+				fmt.Fprintf(os.Stderr, "Incremental flush error: %v\n", err)
+			} else if written > 0 {
+				// Optional: track metrics or log
+				_ = written
+			}
+			// Continue loop - don't return
 
 		case <-s.flushStopChan:
 			s.flushTicker.Stop()
@@ -239,6 +270,51 @@ func (s *StreamConverter) stopAutoFlush() {
 	}
 }
 
+// writeAvailableData writes all available buffered data to output file
+// without closing the SoX process. Returns bytes written.
+func (s *StreamConverter) writeAvailableData() (int, error) {
+	if s.outputFile == nil {
+		return 0, fmt.Errorf("output file not opened")
+	}
+
+	s.bufferLock.Lock()
+	bufferData := s.buffer.Bytes()
+	currentSize := len(bufferData)
+
+	// Only write new data since last flush
+	if currentSize <= s.lastFlushPosition {
+		s.bufferLock.Unlock()
+		return 0, nil
+	}
+
+	// Get new data since last flush
+	newData := bufferData[s.lastFlushPosition:]
+	s.bufferLock.Unlock()
+
+	if len(newData) == 0 {
+		return 0, nil
+	}
+
+	s.outputFileLock.Lock()
+	written, err := s.outputFile.Write(newData)
+	if err != nil {
+		s.outputFileLock.Unlock()
+		return 0, fmt.Errorf("failed to write to output file: %w", err)
+	}
+
+	// Sync to ensure data is flushed to disk
+	if err := s.outputFile.Sync(); err != nil {
+		s.outputFileLock.Unlock()
+		return written, fmt.Errorf("failed to sync output file: %w", err)
+	}
+	s.outputFileLock.Unlock()
+
+	// Update checkpoint
+	s.lastFlushPosition += written
+
+	return written, nil
+}
+
 // Flush closes the input, waits for conversion to complete, and returns all output
 func (s *StreamConverter) Flush() ([]byte, error) {
 	if !s.started {
@@ -250,6 +326,11 @@ func (s *StreamConverter) Flush() ([]byte, error) {
 
 	// Stop auto-flush ticker if running
 	s.stopAutoFlush()
+
+	// In incremental mode, write any remaining data first
+	if s.incrementalFlush && s.outputFile != nil {
+		s.writeAvailableData()
+	}
 
 	// Close stdin to signal end of input
 	if err := s.stdin.Close(); err != nil {
@@ -286,6 +367,20 @@ func (s *StreamConverter) Flush() ([]byte, error) {
 	data := s.buffer.Bytes()
 	s.bufferLock.Unlock()
 
+	// If in incremental mode, write final data and close file
+	if s.incrementalFlush && s.outputFile != nil {
+		s.outputFileLock.Lock()
+		// Write any remaining data since last incremental flush
+		if len(data) > s.lastFlushPosition {
+			finalData := data[s.lastFlushPosition:]
+			s.outputFile.Write(finalData)
+		}
+		s.outputFile.Sync()
+		s.outputFile.Close()
+		s.outputFileLock.Unlock()
+		return nil, nil
+	}
+
 	// If output path is set, write accumulated buffer to file
 	if s.outputPath != "" {
 		if err := os.WriteFile(s.outputPath, data, 0644); err != nil {
@@ -309,6 +404,13 @@ func (s *StreamConverter) Close() error {
 
 	// Stop auto-flush ticker if running
 	s.stopAutoFlush()
+
+	// Close incremental output file if open
+	if s.outputFile != nil {
+		s.outputFileLock.Lock()
+		s.outputFile.Close()
+		s.outputFileLock.Unlock()
+	}
 
 	// Try to close stdin gracefully
 	if s.stdin != nil {

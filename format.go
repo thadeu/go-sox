@@ -116,9 +116,27 @@ var (
 		BitDepth:   8,
 	}
 
+	WAV_8K_MONO_LE = AudioFormat{
+		Type:       "wav",
+		Encoding:   "signed",
+		Endian:     "little",
+		SampleRate: 8000,
+		Channels:   1,
+		BitDepth:   8,
+	}
+
 	WAV_16K_MONO = AudioFormat{
 		Type:       "wav",
 		Encoding:   "signed-integer",
+		SampleRate: 16000,
+		Channels:   1,
+		BitDepth:   16,
+	}
+
+	WAV_16K_MONO_LE = AudioFormat{
+		Type:       "wav",
+		Encoding:   "signed",
+		Endian:     "little",
 		SampleRate: 16000,
 		Channels:   1,
 		BitDepth:   16,

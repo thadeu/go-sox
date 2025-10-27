@@ -77,26 +77,33 @@ for packet := range rtpPackets {
 flacData, err := stream.Flush()
 ```
 
-### Auto-Flush (New!)
+### Auto-Flush (Incremental)
 
-Automatically flush and save after a specified duration:
+Automatically flush and save incrementally during streaming:
 
 ```go
-// Auto-flush after 5 minutes - perfect for RTP calls!
-converter := sox.NewStreamConverter(sox.PCM_RAW_16K_MONO, sox.FLAC_16K_MONO).
+// Auto-flush every 3 seconds - perfect for real-time processing!
+stream := sox.NewStreamConverter(sox.PCM_RAW_16K_MONO, sox.FLAC_16K_MONO).
     WithOutputPath("/app/recordings/call.flac").
-    WithAutoFlush(5 * time.Minute)
+    WithAutoFlush(3 * time.Second)
 
-converter.Start()
+stream.Start()
 
-// Write RTP packets
+// Write RTP packets continuously
 for packet := range rtpChannel {
-    converter.Write(packet.AudioData)
+    stream.Write(packet.AudioData)
+    // File grows incrementally - other processes can read it
 }
 
-// File automatically saved after 5 minutes!
-// No need to call Flush() manually
+// Final flush when done
+stream.Flush()
 ```
+
+**Key Benefits:**
+- File grows incrementally every 3 seconds
+- Other processes can read the file while it's being written
+- SoX process stays alive for continuous streaming
+- Perfect for real-time transcription pipelines
 
 ### Production Example: RTP to Transcription
 
