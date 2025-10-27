@@ -389,7 +389,8 @@ func (s *StreamConverter) Flush() ([]byte, error) {
 	data := s.buffer.Bytes()
 	s.bufferLock.Unlock()
 
-	c := NewConverter(s.Input, s.Output)
+	isIncrementalWithHeader := s.Output.Encoding == "flac" || s.Output.Encoding == "wav"
+	headerFixer := NewConverter(s.Output, s.Output).WithOptions(s.Options)
 
 	// If in incremental mode, write final data and close file
 	if s.incrementalFlush && s.outputFile != nil {
@@ -398,21 +399,39 @@ func (s *StreamConverter) Flush() ([]byte, error) {
 		// Write any remaining data since last incremental flush
 		if len(data) > s.lastFlushPosition {
 			finalData := data[s.lastFlushPosition:]
-
-			c.Convert(bytes.NewReader(finalData), s.outputFile)
+			s.outputFile.Write(finalData)
 		}
 
 		s.outputFile.Sync()
 		s.outputFile.Close()
 		s.outputFileLock.Unlock()
+
+		// Fix the header with proper duration
+		// Only apply header fix for formats that support it (FLAC, WAV, etc.)
+		if isIncrementalWithHeader {
+			if err := headerFixer.ConvertFile(s.outputPath, s.outputPath); err != nil {
+				return nil, fmt.Errorf("failed to fix output file header: %w", err)
+			}
+		}
+
 		return nil, nil
 	}
 
 	// If output path is set, write accumulated buffer to file
 	if s.outputPath != "" {
+		// The buffer already contains converted data (FLAC), so write it directly
 		if err := os.WriteFile(s.outputPath, data, 0644); err != nil {
 			return nil, fmt.Errorf("failed to write output file: %w", err)
 		}
+
+		// Fix the header with proper duration for non-incremental mode too
+		// Only apply header fix for formats that support it (FLAC, WAV, etc.)
+		if isIncrementalWithHeader {
+			if err := headerFixer.ConvertFile(s.outputPath, s.outputPath); err != nil {
+				return nil, fmt.Errorf("failed to fix output file header: %w", err)
+			}
+		}
+
 		return nil, nil // No data to return when writing to file
 	}
 

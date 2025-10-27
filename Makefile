@@ -1,7 +1,7 @@
 .PHONY: test bench example clean install-sox
 
 test:
-	go test ./... -v -cover
+	gotestsum --format=short-verbose
 
 bench:
 	go test ./... -bench=. -benchmem -v
