@@ -405,22 +405,53 @@ func (s *StreamConverter) Close() error {
 	// Stop auto-flush ticker if running
 	s.stopAutoFlush()
 
-	// Close incremental output file if open
-	if s.outputFile != nil {
-		s.outputFileLock.Lock()
-		s.outputFile.Close()
-		s.outputFileLock.Unlock()
-	}
-
-	// Try to close stdin gracefully
+	// Close stdin to signal end of input
 	if s.stdin != nil {
 		_ = s.stdin.Close()
 	}
 
-	// Kill the process if still running
-	if s.cmd.Process != nil {
-		_ = s.cmd.Process.Kill()
+	// Wait for reading to complete
+	if s.readDone != nil {
+		<-s.readDone
+	}
+
+	// Wait for process to exit gracefully
+	if s.cmd != nil && s.cmd.Process != nil {
+		// Try to wait for graceful exit first
+		done := make(chan error, 1)
+		go func() {
+			done <- s.cmd.Wait()
+		}()
+
+		// Wait up to 5 seconds for graceful exit
+		select {
+		case <-done:
+			// Process exited gracefully
+		case <-time.After(5 * time.Second):
+			// Timeout - force kill
+			s.cmd.Process.Kill()
+			<-done // Wait for Wait() to return after Kill
+		}
+
 		GetMonitor().UntrackProcess(s.cmd.Process.Pid)
+	}
+
+	// NOW close the output file after process is completely done
+	if s.outputFile != nil {
+		s.outputFileLock.Lock()
+		// Write any remaining data from buffer if in incremental mode
+		if s.incrementalFlush {
+			s.bufferLock.Lock()
+			data := s.buffer.Bytes()
+			if len(data) > s.lastFlushPosition {
+				finalData := data[s.lastFlushPosition:]
+				s.outputFile.Write(finalData)
+			}
+			s.bufferLock.Unlock()
+		}
+		s.outputFile.Sync()
+		s.outputFile.Close()
+		s.outputFileLock.Unlock()
 	}
 
 	s.closed = true
