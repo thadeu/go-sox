@@ -98,6 +98,15 @@ var (
 		BitDepth:   16,
 	}
 
+	FLAC_16K_MONO_LE = AudioFormat{
+		Type:       "flac",
+		Encoding:   "unsigned",
+		Endian:     "little",
+		SampleRate: 16000,
+		Channels:   1,
+		BitDepth:   16,
+	}
+
 	// FLAC_44K_STEREO - FLAC 44.1kHz stereo (CD quality)
 	FLAC_44K_STEREO = AudioFormat{
 		Type:       "flac",
