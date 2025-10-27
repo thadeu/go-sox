@@ -389,14 +389,19 @@ func (s *StreamConverter) Flush() ([]byte, error) {
 	data := s.buffer.Bytes()
 	s.bufferLock.Unlock()
 
+	c := NewConverter(s.Input, s.Output)
+
 	// If in incremental mode, write final data and close file
 	if s.incrementalFlush && s.outputFile != nil {
 		s.outputFileLock.Lock()
+
 		// Write any remaining data since last incremental flush
 		if len(data) > s.lastFlushPosition {
 			finalData := data[s.lastFlushPosition:]
-			s.outputFile.Write(finalData)
+
+			c.Convert(bytes.NewReader(finalData), s.outputFile)
 		}
+
 		s.outputFile.Sync()
 		s.outputFile.Close()
 		s.outputFileLock.Unlock()
