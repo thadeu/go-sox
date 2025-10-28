@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -345,6 +346,225 @@ func (s *SoxTestSuite) TestBackwardCompat_NewTicker() {
 
 	err = conv.Stop()
 	require.NoError(s.T(), err)
+}
+
+// TEST SUITE 5: Command Arguments Verification
+// ═══════════════════════════════════════════════════════════
+
+// TestCommandArgs_PathMode verifies that path mode uses direct file access (no piping)
+func (s *SoxTestSuite) TestCommandArgs_PathMode() {
+	inputPath := filepath.Join(s.tmpDir, "input.pcm")
+	outputPath := filepath.Join(s.tmpDir, "output.flac")
+
+	// Create input file
+	pcmData := s.generatePCMData(8000, 1000)
+	err := os.WriteFile(inputPath, pcmData, 0644)
+	require.NoError(s.T(), err)
+
+	// Create converter in path mode
+	conv := New(PCM_RAW_8K_MONO, FLAC_16K_MONO_LE)
+	conv.pathMode = true
+	conv.inputPath = inputPath
+	conv.outputPath = outputPath
+
+	// Build command arguments
+	args := conv.buildCommandArgs()
+
+	// Verify path mode arguments: sox input.pcm output.flac (no "-" pipes)
+	s.T().Logf("Path mode args: %v", args)
+
+	// Should have input file path in arguments
+	assert.Contains(s.T(), args, inputPath, "Input path should be in arguments")
+
+	// Should have output file path in arguments
+	assert.Contains(s.T(), args, outputPath, "Output path should be in arguments")
+
+	// Should NOT have stdin/stdout pipes for path mode
+	// Count occurrences of "-" (should only be in format specifications, not I/O)
+	pipesCount := 0
+	for _, arg := range args {
+		if arg == "-" {
+			pipesCount++
+		}
+	}
+	// Path mode should have 0 "-" pipes for I/O
+	assert.Equal(s.T(), 0, pipesCount, "Path mode should not have '-' pipes for I/O")
+
+	// Verify order: format args, input file, format args, output file
+	inputIdx := -1
+	outputIdx := -1
+	for i, arg := range args {
+		if arg == inputPath {
+			inputIdx = i
+		}
+		if arg == outputPath {
+			outputIdx = i
+		}
+	}
+	assert.Greater(s.T(), inputIdx, 0, "Input path should be after format args")
+	assert.Greater(s.T(), outputIdx, inputIdx, "Output path should be after input path")
+}
+
+// TestCommandArgs_StreamMode verifies that stream mode uses pipes for I/O (- -)
+func (s *SoxTestSuite) TestCommandArgs_StreamMode() {
+	// Create converter in stream mode (NOT path mode)
+	conv := New(PCM_RAW_8K_MONO, FLAC_16K_MONO_LE)
+	conv.pathMode = false
+	conv.streamMode = true
+
+	// Build command arguments
+	args := conv.buildCommandArgs()
+
+	// Verify stream mode arguments: sox ... - ... - (with pipes)
+	s.T().Logf("Stream mode args: %v", args)
+
+	// Should have stdin and stdout pipes
+	assert.Contains(s.T(), args, "-", "Stream mode should have '-' pipes")
+
+	// Count pipes - should be exactly 2 (stdin and stdout)
+	pipesCount := 0
+	for _, arg := range args {
+		if arg == "-" {
+			pipesCount++
+		}
+	}
+	assert.Equal(s.T(), 2, pipesCount, "Stream mode should have exactly 2 '-' pipes (stdin and stdout)")
+
+	// Should NOT have file paths for stream mode
+	assert.NotContains(s.T(), args, "/", "Stream mode should not have file paths")
+}
+
+// TestCommandArgs_TickerMode verifies ticker mode uses stdin pipe and output file (- path)
+func (s *SoxTestSuite) TestCommandArgs_TickerMode() {
+	outputPath := filepath.Join(s.tmpDir, "ticker_output.flac")
+
+	// Create converter in ticker mode
+	conv := New(PCM_RAW_8K_MONO, FLAC_16K_MONO_LE)
+	conv.pathMode = false
+	conv.tickerMode = true
+	conv.outputPath = outputPath
+
+	// Build command arguments
+	args := conv.buildCommandArgs()
+
+	// Verify ticker mode arguments: sox ... - ... output.flac (stdin pipe + output file)
+	s.T().Logf("Ticker mode args: %v", args)
+
+	// Should have stdin pipe
+	assert.Contains(s.T(), args, "-", "Ticker mode should have stdin pipe ('-')")
+
+	// Should have output file path
+	assert.Contains(s.T(), args, outputPath, "Ticker mode should have output file path")
+
+	// Count pipes - should be exactly 1 (only stdin)
+	pipesCount := 0
+	for _, arg := range args {
+		if arg == "-" {
+			pipesCount++
+		}
+	}
+	assert.Equal(s.T(), 1, pipesCount, "Ticker mode should have exactly 1 '-' pipe (stdin)")
+
+	// Verify order: format args, stdin pipe (-), format args, output path
+	stdinIdx := -1
+	outputIdx := -1
+	for i, arg := range args {
+		if arg == "-" && stdinIdx == -1 {
+			stdinIdx = i
+		}
+		if arg == outputPath {
+			outputIdx = i
+		}
+	}
+	assert.Greater(s.T(), stdinIdx, 0, "Stdin pipe should be after format args")
+	assert.Greater(s.T(), outputIdx, stdinIdx, "Output path should be after stdin pipe")
+}
+
+// TestCommandArgs_TickerModeRealWorld verifies real-world use case (mu-law to FLAC)
+// This matches the user's actual use case in their RTP recorder
+func (s *SoxTestSuite) TestCommandArgs_TickerModeRealWorld() {
+	outputPath := filepath.Join(s.tmpDir, "rtp_output.flac")
+
+	// Create converter with formats matching user's real-world use case
+	// Input: mu-law (G.711), Output: FLAC
+	input := AudioFormat{
+		Type:           "raw",
+		Encoding:       "mu-law",
+		SampleRate:     8000,
+		Channels:       1,
+		BitDepth:       8,
+		IgnoreLength:   true,
+	}
+
+	output := AudioFormat{
+		Type:       "flac",
+		SampleRate: 16000,
+		Channels:   1,
+		BitDepth:   16,
+	}
+
+	// Add options for compression and comment
+	opts := DefaultOptions()
+	opts.CompressionLevel = 0
+	opts.CustomGlobalArgs = []string{"--add-comment", "PAPI rtp-recorder"}
+
+	// Create converter in ticker mode
+	conv := New(input, output)
+	conv.Options = opts
+	conv.pathMode = false
+	conv.tickerMode = true
+	conv.outputPath = outputPath
+
+	// Build command arguments
+	args := conv.buildCommandArgs()
+
+	s.T().Logf("Real-world ticker mode command: sox %s", strings.Join(args, " "))
+
+	// Verify key arguments are present
+	assert.Contains(s.T(), args, "raw", "Should have 'raw' input type")
+	assert.Contains(s.T(), args, "mu-law", "Should have 'mu-law' encoding")
+	assert.Contains(s.T(), args, "8000", "Should have 8000 Hz input rate")
+	assert.Contains(s.T(), args, "1", "Should have 1 channel")
+
+	assert.Contains(s.T(), args, "flac", "Should have 'flac' output type")
+	assert.Contains(s.T(), args, "16000", "Should have 16000 Hz output rate")
+	assert.Contains(s.T(), args, "-C", "Should have compression level flag")
+	assert.Contains(s.T(), args, "0", "Should have compression level 0")
+
+	assert.Contains(s.T(), args, "--add-comment", "Should have add-comment flag")
+	assert.Contains(s.T(), args, "PAPI rtp-recorder", "Should have comment text")
+
+	// Verify structure: should be stdin pipe (-) then output file
+	pipesCount := 0
+	hasStdin := false
+	hasOutputPath := false
+	stdinBeforeOutput := false
+
+	for i, arg := range args {
+		if arg == "-" && !hasStdin {
+			hasStdin = true
+			pipesCount++
+			// Check if output path comes after stdin
+			for j := i + 1; j < len(args); j++ {
+				if args[j] == outputPath {
+					stdinBeforeOutput = true
+					break
+				}
+			}
+		}
+		if arg == outputPath {
+			hasOutputPath = true
+		}
+	}
+
+	assert.True(s.T(), hasStdin, "Should have stdin pipe")
+	assert.True(s.T(), hasOutputPath, "Should have output path")
+	assert.True(s.T(), stdinBeforeOutput, "Stdin pipe should come before output path")
+
+	// Verify this would work with cmd.Stdin = bytes.NewReader(data)
+	// This command structure matches:
+	// sox -t raw -r 8000 -b 8 -c 1 -e mu-law --ignore-length - -t flac -r 16000 -b 16 -c 1 -C 0 --add-comment "PAPI rtp-recorder" output.flac
+	s.T().Logf("✓ Command structure verified for user's RTP recorder use case")
 }
 
 // BENCHMARK TESTS

@@ -50,7 +50,7 @@ type Converter struct {
 	tickerLock     sync.Mutex
 
 	outputPath string
-	
+
 	// Path mode (direct file handling, no piping)
 	pathMode  bool
 	inputPath string
@@ -624,7 +624,7 @@ func (c *Converter) convertInternalPath(ctx context.Context, inputPath, outputPa
 	args := c.buildCommandArgs()
 	cmd := exec.CommandContext(ctx, c.Options.SoxPath, args...)
 
-	cmd.Stdin = nil // No stdin for path-based conversion
+	cmd.Stdin = nil  // No stdin for path-based conversion
 	cmd.Stdout = nil // No stdout for path-based conversion
 
 	stderr, err := cmd.StderrPipe()
