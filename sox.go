@@ -67,6 +67,19 @@ func New(input, output AudioFormat) *Converter {
 	}
 }
 
+// NewConverter creates a new Converter with input and output formats
+// This is a backward compatibility wrapper around New()
+func NewConverter(input, output AudioFormat) *Converter {
+	return New(input, output)
+}
+
+// NewStreamer creates a new Streamer (now mapped to Converter with ticker mode)
+// This is a backward compatibility wrapper around New() + WithTicker()
+// Deprecated: use New() + WithTicker() + Start() instead
+func NewStreamer(input, output AudioFormat) *Converter {
+	return New(input, output)
+}
+
 // WithOptions sets custom conversion options
 func (c *Converter) WithOptions(opts ConversionOptions) *Converter {
 	c.Options = opts
@@ -118,8 +131,14 @@ func (c *Converter) WithTicker(interval time.Duration) *Converter {
 	return c
 }
 
-func (s *Streamer) WithOutputPath(path string) *Streamer {
+func (s *Converter) WithOutputPath(path string) *Converter {
 	s.outputPath = path
+	return s
+}
+
+func (s *Converter) WithStart() *Converter {
+	s.Start()
+
 	return s
 }
 
@@ -246,7 +265,7 @@ func (c *Converter) Read(b []byte) (int, error) {
 // For ticker mode, starts the periodic conversion loop
 func (c *Converter) Start() error {
 	if c.tickerMode {
-		return c.startTicker()
+		return c.runTicker()
 	}
 
 	if !c.streamMode {
@@ -295,8 +314,8 @@ func (c *Converter) Start() error {
 	return nil
 }
 
-// startTicker initializes the ticker-based conversion
-func (c *Converter) startTicker() error {
+// runTicker initializes the ticker-based conversion
+func (c *Converter) runTicker() error {
 	if c.tickerDuration <= 0 {
 		return fmt.Errorf("ticker duration must be positive")
 	}
@@ -330,6 +349,9 @@ func (c *Converter) flushTickerBuffer() error {
 	// Create a copy of buffer data
 	inputData := make([]byte, c.tickerBuffer.Len())
 	copy(inputData, c.tickerBuffer.Bytes())
+
+	// Reset buffer after copying to avoid duplicate processing
+	c.tickerBuffer.Reset()
 
 	// Run conversion on copied data
 	ctx := context.Background()
@@ -518,15 +540,13 @@ func (c *Converter) buildCommandArgs() []string {
 	args = append(args, c.Options.BuildGlobalArgs()...)
 	args = append(args, c.Input.BuildArgs()...)
 
-	if c.streamMode && !c.Input.Pipe {
-		args = append(args, "-")
-	}
+	// Add input source (always stdin)
+	args = append(args, "-")
 
 	args = append(args, c.Output.BuildArgs()...)
 
-	if c.streamMode {
-		args = append(args, "-")
-	} else if c.tickerMode && c.outputPath != "" {
+	// Add output destination
+	if c.tickerMode && c.outputPath != "" {
 		args = append(args, c.outputPath)
 	} else {
 		args = append(args, "-")
