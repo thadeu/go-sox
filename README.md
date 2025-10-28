@@ -11,7 +11,9 @@ This library provides a Go interface to SoX (Sound eXchange) that eliminates fil
 
 Primary use case: converting RTP media streams (PCM Raw) to compressed formats (FLAC) for transcription APIs with minimal latency.
 
-## Performance
+## Why go-sox?
+
+### Performance
 
 Benchmarks on Apple M2 with 1 second audio (16kHz mono PCM to FLAC):
 
@@ -21,12 +23,19 @@ BenchmarkStreamConverter-8           243      4886878 ns/op      98629 B/op    1
 BenchmarkFFmpegComparison-8           28     41985972 ns/op      23525 B/op     99 allocs/op
 ```
 
-Results:
+**SoX with pipes is 8.6x faster than ffmpeg** for typical conversions:
 - SoX Converter: 4.87ms per conversion
-- SoX Stream: 4.88ms per conversion
+- SoX Stream: 4.88ms per conversion  
 - FFmpeg (file I/O): 42ms per conversion
 
-**SoX with pipes is 8.6x faster than ffmpeg** for typical conversions. The streaming approach maintains the same performance while allowing incremental processing of RTP packets.
+### Production-Ready by Default
+
+Every converter includes:
+- **Circuit breaker** - prevents cascading failures
+- **Automatic retry** - exponential backoff on transient errors
+- **Worker pool** - limits concurrent SoX processes
+- **Timeout support** - prevents hung conversions
+- **Process monitoring** - track active processes and statistics
 
 ## Installation
 
@@ -34,191 +43,132 @@ Results:
 # Install SoX
 brew install sox  # macOS
 apt-get install sox  # Debian/Ubuntu
+# or
+yum install sox  # CentOS/RHEL
 
 # Install library
 go get github.com/thadeu/go-sox
 ```
 
-## Usage
+## Quick Start
 
-### Basic Usage
+### Converter: One-Shot Conversions
+
+Perfect for batch processing or individual conversions:
 
 ```go
 import sox "github.com/thadeu/go-sox"
 
-// NewConverter is resilient by default (includes circuit breaker & retry)
+// NewConverter is production-ready by default (circuit breaker, retry, timeout)
 converter := sox.NewConverter(sox.PCM_RAW_16K_MONO, sox.FLAC_16K_MONO)
-err := converter.Convert(inputReader, outputWriter)
 
-// Add worker pool (creates default pool if no arg)
-converter := sox.NewConverter(input, output).
-    WithPool() // Creates pool with SOX_MAX_WORKERS (default: 500)
+// Convert from reader to writer
+input := bytes.NewReader(pcmData)
+output := &bytes.Buffer{}
+err := converter.Convert(input, output)
 
-// Or use custom pool
-pool := sox.NewPool()
-converter := sox.NewConverter(input, output).
-    WithPool(pool)
+// Or convert files
+err := converter.ConvertFile("input.pcm", "output.flac")
 ```
 
-### Auto-Flush (Incremental)
+### Streamer: Real-Time Streaming
 
-Automatically flush and save incrementally during streaming:
+Perfect for processing continuous streams (RTP, WebRTC, live audio):
 
 ```go
-// Auto-flush every 3 seconds - perfect for real-time processing!
+// Auto-start with flush every 3 seconds
 stream := sox.NewStreamer(sox.PCM_RAW_16K_MONO, sox.FLAC_16K_MONO).
-    WithOutputPath("/app/recordings/call.flac").
+    WithOutputPath("/tmp/stream.flac").
     WithAutoStart(3 * time.Second)
 
-// Write RTP packets continuously
+// Write audio chunks continuously
 for packet := range rtpChannel {
     stream.Write(packet.Payload)
-    // File grows incrementally - other processes can read it
 }
 
-// Final flush when done
+// Final flush and close
 stream.End()
 ```
 
-**Key Benefits:**
-- File grows incrementally every 3 seconds
+**Key Streamer Benefits:**
+- File grows incrementally at each flush interval
 - Other processes can read the file while it's being written
-- SoX process stays alive for continuous streaming
+- Minimal memory footprint for long-running streams
 - Perfect for real-time transcription pipelines
 
-### Production Example: RTP to Transcription
+## Converter vs Streamer
+
+| Feature | Converter | Streamer |
+|---------|-----------|----------|
+| Use Case | Batch, one-shot conversions | Continuous, real-time streaming |
+| Process Lifetime | One conversion per process | Single process handles multiple writes |
+| Memory | Minimal for single conversions | Constant regardless of stream length |
+| Output | Entire result after conversion | Incremental writes to file |
+| Ideal For | API endpoints, batch jobs | Live recording, RTP processing |
+
+## Core Features
+
+### Resiliency: Built In
+
+All converters include three layers of protection:
+
+#### 1. Automatic Retry with Exponential Backoff
 
 ```go
-func ProcessRTPBatch(pcmData []byte) error {
-    // WithPool() creates default pool automatically
-    converter := sox.NewConverter(sox.PCM_RAW_16K_MONO, sox.FLAC_16K_MONO).
-        WithPool()
-    
-    input := bytes.NewReader(pcmData)
-    output := &bytes.Buffer{}
-    
-    // Automatic retry + circuit breaker + pool concurrency control
-    if err := converter.Convert(input, output); err != nil {
-        return err
-    }
-    
-    return sendToWhisper(output.Bytes())
-}
-```
-
-## Format Presets
-
-Common formats included:
-
-- `PCM_RAW_8K_MONO`, `PCM_RAW_16K_MONO`, `PCM_RAW_48K_MONO`
-- `FLAC_16K_MONO`, `FLAC_44K_STEREO`
-- `WAV_16K_MONO`
-- `ULAW_8K_MONO`
-
-Custom formats supported via `AudioFormat` struct.
-
-## Options
-
-```go
-opts := sox.DefaultOptions()
-opts.CompressionLevel = 8      // FLAC compression level
-opts.BufferSize = 64 * 1024    // I/O buffer size
-opts.Effects = []string{"norm"} // SoX effects chain
-
-converter.WithOptions(opts)
-```
-
-### Advanced Options
-
-go-sox supports all SoX format and global options without discriminating file types. This gives you complete flexibility:
-
-```go
-// Extended format options
-input := sox.AudioFormat{
-    Type:         "raw",
-    Encoding:     "signed-integer",
-    SampleRate:   16000,
-    Channels:     1,
-    BitDepth:     16,
-    Volume:       1.5,     // -v|--volume FACTOR
-    IgnoreLength: true,    // --ignore-length
-    Endian:       "little", // --endian little|big|swap
-}
-
-output := sox.AudioFormat{
-    Type:        "flac",
-    SampleRate:  16000,
-    Channels:    1,
-    BitDepth:    16,
-    Compression: 8.0,   // -C|--compression FACTOR
-    Comment:     "Metadata", // --comment TEXT
-}
-
-// Global options
-options := sox.ConversionOptions{
-    Buffer:       16384,  // --buffer BYTES
-    NoDither:     true,   // -D|--no-dither
-    Guard:        true,   // -G|--guard
-    Norm:         true,   // --norm
-    SingleThreaded: false, // --single-threaded
-    VerbosityLevel: 3,    // -V[LEVEL]
-}
-
-// Full flexibility with CustomArgs
-format := sox.AudioFormat{
-    Type:       "flac",
-    CustomArgs: []string{"--add-comment", "Custom metadata"},
-}
-
-converter := sox.NewConverter(input, output).WithOptions(options)
-```
-
-See [ADVANCED_OPTIONS.md](docs/ADVANCED_OPTIONS.md) for complete documentation on all available options.
-
-## Production Features
-
-**NewConverter is production-ready by default** - includes circuit breaker, retry, and timeout support.
-
-### Worker Pool
-
-Limit concurrent SoX processes to prevent resource exhaustion:
-
-```go
-// Option 1: Let converter create default pool
-converter := sox.NewConverter(input, output).
-    WithPool() // Creates pool with SOX_MAX_WORKERS (default: 500)
-
-// Option 2: Share pool across multiple converters
-pool := sox.NewPool() // or NewPoolWithLimit(100)
-converter1 := sox.NewConverter(input1, output1).WithPool(pool)
-converter2 := sox.NewConverter(input2, output2).WithPool(pool)
-```
-
-### Customizing Resiliency
-
-Defaults are production-ready, but you can customize:
-
-```go
+// Default: 3 attempts with 100ms-5s backoff
+// Customizable:
 converter := sox.NewConverter(input, output).
     WithRetryConfig(sox.RetryConfig{
-        MaxAttempts:     3,
-        InitialBackoff:  100 * time.Millisecond,
-        MaxBackoff:      5 * time.Second,
+        MaxAttempts:     5,
+        InitialBackoff:  50 * time.Millisecond,
+        MaxBackoff:      10 * time.Second,
         BackoffMultiple: 2.0,
-    }).
-    WithCircuitBreaker(sox.NewCircuitBreakerWithConfig(
-        5,                  // maxFailures
-        10 * time.Second,   // resetTimeout  
-        3,                  // halfOpenRequests
-    )).
-    WithPool(pool)
+    })
 ```
 
-### Disabling Resiliency (not recommended)
+#### 2. Circuit Breaker Pattern
 
 ```go
+// Default: opens after 5 failures, resets after 10s
+// Customizable:
+breaker := sox.NewCircuitBreakerWithConfig(
+    10,              // max failures
+    15 * time.Second, // reset timeout
+    5,               // half-open requests
+)
 converter := sox.NewConverter(input, output).
-    DisableResilience()
+    WithCircuitBreaker(breaker)
+```
+
+#### 3. Worker Pool Concurrency Control
+
+```go
+// Prevents resource exhaustion by limiting concurrent SoX processes
+
+// Option 1: Auto-created pool (respects SOX_MAX_WORKERS env var, default: 500)
+converter := sox.NewConverter(input, output).WithPool()
+
+// Option 2: Custom pool limit
+pool := sox.NewPoolWithLimit(100)
+converter1 := sox.NewConverter(input, output).WithPool(pool)
+converter2 := sox.NewConverter(input, output).WithPool(pool)
+```
+
+### Timeout Support
+
+Prevent conversions from hanging indefinitely:
+
+```go
+// Using options
+opts := sox.DefaultOptions()
+opts.Timeout = 10 * time.Second
+converter := sox.NewConverter(input, output).WithOptions(opts)
+converter.Convert(input, output) // enforces 10s timeout
+
+// Using context
+ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+defer cancel()
+converter.ConvertWithContext(ctx, input, output) // cancellation propagates
 ```
 
 ### Resource Monitoring
@@ -230,74 +180,296 @@ monitor := sox.GetMonitor()
 stats := monitor.GetStats()
 
 fmt.Printf("Active processes: %d\n", stats.ActiveProcesses)
+fmt.Printf("Conversions completed: %d\n", stats.TotalConversions)
 fmt.Printf("Success rate: %.2f%%\n", stats.SuccessRate)
-fmt.Printf("Total conversions: %d\n", stats.TotalConversions)
 ```
 
-### Timeout Support
+## Usage Patterns
 
-Prevent hung conversions:
+### Pattern 1: Batch Conversion
+
+```go
+func convertBatch(files []string) error {
+    converter := sox.NewConverter(sox.PCM_RAW_16K_MONO, sox.FLAC_16K_MONO).
+        WithPool() // worker pool for parallelization
+
+    for _, file := range files {
+        outputFile := strings.TrimSuffix(file, ".pcm") + ".flac"
+        if err := converter.ConvertFile(file, outputFile); err != nil {
+            return err
+        }
+    }
+    return nil
+}
+```
+
+### Pattern 2: API Endpoint
+
+```go
+func handleAudioConvert(w http.ResponseWriter, r *http.Request) {
+    converter := sox.NewConverter(sox.PCM_RAW_16K_MONO, sox.FLAC_16K_MONO)
+    
+    output := &bytes.Buffer{}
+    if err := converter.Convert(r.Body, output); err != nil {
+        http.Error(w, err.Error(), http.StatusInternalServerError)
+        return
+    }
+    
+    w.Header().Set("Content-Type", "audio/flac")
+    w.Write(output.Bytes())
+}
+```
+
+### Pattern 3: RTP/Live Stream Recording
+
+```go
+func recordRTPStream(rtpChan chan []byte, outputFile string) error {
+    streamer := sox.NewStreamer(sox.PCM_RAW_16K_MONO, sox.FLAC_16K_MONO).
+        WithOutputPath(outputFile).
+        WithAutoStart(5 * time.Second) // flush every 5 seconds
+    
+    for {
+        select {
+        case packet, ok := <-rtpChan:
+            if !ok {
+                return streamer.End()
+            }
+            if _, err := streamer.Write(packet); err != nil {
+                return err
+            }
+        case <-time.After(30 * time.Second):
+            return streamer.End()
+        }
+    }
+}
+```
+
+### Pattern 4: Disable Resiliency (Not Recommended)
+
+Only disable resiliency for testing or when you're implementing your own:
+
+```go
+converter := sox.NewConverter(input, output).
+    DisableResilience() // no retry, no circuit breaker, single attempt
+```
+
+## Audio Formats
+
+### Format Presets
+
+Commonly used formats are pre-configured:
+
+```go
+// PCM Raw formats (telephony/streaming)
+sox.PCM_RAW_8K_MONO   // 8kHz mono (G.711 compatible)
+sox.PCM_RAW_16K_MONO  // 16kHz mono (popular)
+sox.PCM_RAW_48K_MONO  // 48kHz mono (professional)
+
+// FLAC (lossless)
+sox.FLAC_16K_MONO     // 16kHz mono
+sox.FLAC_44K_STEREO   // 44.1kHz stereo
+
+// WAV (uncompressed)
+sox.WAV_16K_MONO      // 16kHz mono
+sox.WAV_8K_MONO_LE    // 8kHz mono, little-endian
+
+// Telephony
+sox.ULAW_8K_MONO      // G.711 μ-law 8kHz
+```
+
+### Custom Formats
+
+Use any SoX-supported format:
+
+```go
+input := sox.AudioFormat{
+    Type:       "raw",
+    Encoding:   "signed-integer",
+    SampleRate: 16000,
+    Channels:   1,
+    BitDepth:   16,
+    IgnoreLength: true,  // useful for streaming
+    Endian:     "little",
+    Volume:     1.5,
+}
+
+output := sox.AudioFormat{
+    Type:        "flac",
+    SampleRate:  16000,
+    Channels:    1,
+    BitDepth:    16,
+    Compression: 8.0,
+    Comment:     "Auto-generated recording",
+}
+
+converter := sox.NewConverter(input, output)
+```
+
+## Options
+
+### Conversion Options
+
+Control SoX behavior during conversions:
 
 ```go
 opts := sox.DefaultOptions()
-opts.Timeout = 10 * time.Second
-converter.WithOptions(opts)
 
-// Or use context
-ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-defer cancel()
-converter.ConvertWithContext(ctx, input, output)
+// I/O settings
+opts.BufferSize = 64 * 1024  // 64KB I/O buffer
+opts.Timeout = 30 * time.Second
+
+// Quality/Compression
+opts.CompressionLevel = 8    // FLAC compression (0-8)
+opts.Quality = 5             // Lossy format quality (0-10)
+
+// Effects
+opts.Effects = []string{"norm", "-3"}  // normalize then compress 3dB
+opts.Effects = []string{"highpass", "100"} // remove sub-100Hz
+
+// Global SoX options
+opts.NoDither = true         // disable dithering
+opts.Guard = true            // guard against clipping
+opts.Norm = true             // guard & normalize
+opts.VerbosityLevel = 2      // debug output
+
+// SoX binary location
+opts.SoxPath = "/usr/local/bin/sox"
+
+converter := sox.NewConverter(input, output).WithOptions(opts)
 ```
+
+### Advanced Format Options
+
+Full flexibility with extended format parameters:
+
+```go
+format := sox.AudioFormat{
+    Type:           "raw",
+    Encoding:       "signed-integer",
+    SampleRate:     16000,
+    Channels:       1,
+    BitDepth:       16,
+    Endian:         "little",
+    Volume:         1.2,
+    ReverseNibbles: false,
+    ReverseBits:    false,
+    IgnoreLength:   true,
+    NoGlob:         true,
+    CustomArgs:     []string{"--no-dither"},
+}
+```
+
+See [ADVANCED_OPTIONS.md](docs/ADVANCED_OPTIONS.md) for complete documentation.
 
 ## Testing
 
 ```bash
-go test -v              # Run tests
+go test -v              # Run all tests
 go test -bench=.        # Run benchmarks
-go test -v -run TestPooled  # Test concurrent load
+go test -v -run TestPooled  # Test concurrent workload
 make test              # Using Makefile
 ```
 
 ## Production Deployment
 
-For high-load scenarios (100+ parallel conversions), you must configure system limits:
+For high-load scenarios (100+ parallel conversions), configure system limits:
 
 ```bash
 # Set worker pool limit
 export SOX_MAX_WORKERS=500
 
-# Increase Linux ulimits (see PRODUCTION.md)
+# Increase Linux ulimits (permanent configuration in /etc/security/limits.conf)
 ulimit -n 65536  # File descriptors
-ulimit -u 4096   # Processes
+ulimit -u 4096   # Max processes
 ```
 
-See [PRODUCTION.md](docs/PRODUCTION.md) for detailed deployment instructions including:
-- Linux ulimit persistence across reboots
-- Docker/Kubernetes configuration
-- Systemd service limits
-- Monitoring and troubleshooting
+### Docker/Kubernetes
+
+```dockerfile
+FROM ubuntu:22.04
+RUN apt-get update && apt-get install -y sox
+ENV SOX_MAX_WORKERS=500
+```
+
+For detailed production deployment instructions, monitoring, and troubleshooting, see [PRODUCTION.md](docs/PRODUCTION.md).
 
 ## Requirements
 
-- SoX installed and in PATH
-- Go 1.21 or later
+- **SoX 14.4+** - installed and in `$PATH` or custom path via `ConversionOptions.SoxPath`
+- **Go 1.21+** - for generics support and modern context handling
 
 ## Architecture
 
-The library spawns SoX processes and communicates via pipes:
+### Converter Flow
 
 ```
-Input Reader → stdin → SoX Process → stdout → Output Writer
+Reader → stdin → SoX Process → stdout → Writer
 ```
 
-For streaming, the SoX process remains alive, accepting writes until explicitly flushed.
+Each conversion spawns a new SoX process, communicates via pipes, and cleans up after completion.
+
+### Streamer Flow
+
+```
+Write() → Buffer → [Tick] → SoX Process → Output File (incremental)
+                       ↓
+                   Continues...
+                       ↓
+End() → Final Flush → Close Process
+```
+
+The SoX process remains alive during streaming, accepting incremental writes.
 
 ## Examples
 
 See `examples/` directory:
 
-- `rtp_to_flac.go` - Various conversion patterns
-- `sip_integration.go` - Production RTP handler implementation
+- `rtp_to_flac.go` - Various RTP conversion patterns
+- `sip_integration.go` - Production SIP/RTP handler
+- `incremental_flush.go` - Real-time streaming with incremental writes
+- `pool.go` - Worker pool usage patterns
+- `circuit_breaker.go` - Resiliency patterns
+
+## Troubleshooting
+
+### "sox: command not found"
+
+```bash
+# Install SoX
+brew install sox  # macOS
+
+# Or specify path explicitly
+converter := sox.NewConverter(input, output)
+opts := sox.DefaultOptions()
+opts.SoxPath = "/usr/local/bin/sox"
+converter.WithOptions(opts)
+```
+
+### Conversion Timeout
+
+Increase timeout or check system resources:
+
+```go
+opts := sox.DefaultOptions()
+opts.Timeout = 60 * time.Second // increase from default
+converter.WithOptions(opts)
+```
+
+### Resource Exhaustion
+
+Enable worker pool to prevent process explosion:
+
+```go
+// Always add pool for production
+converter := sox.NewConverter(input, output).WithPool()
+```
+
+## Contributing
+
+Contributions are welcome! Please ensure:
+- Tests pass: `go test -v`
+- Benchmarks don't regress: `go test -bench=.`
+- Code follows Go conventions
 
 ## License
 
