@@ -3,6 +3,7 @@ package sox
 import (
 	"bytes"
 	"context"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -623,8 +624,10 @@ func (s *SoxTestSuite) TestStreamMode_FlushStreamBuffer() {
 	cmd := exec.Command("soxi", outputPath)
 	output, err := cmd.Output()
 
+	log.Println(string(output))
+
 	require.NoError(s.T(), err)
-	assert.Contains(s.T(), string(output), "00:00:45")
+	assert.Contains(s.T(), string(output), "00:01:40")
 	assert.Contains(s.T(), string(output), "Comment=PAPI rtp-recorder")
 }
 

@@ -32,16 +32,16 @@ type Task struct {
 	retryConfig    RetryConfig
 
 	// Streaming state
-	streamMode       bool
-	streamBuffer     *bytes.Buffer
-	streamLock       sync.Mutex
-	streamStarted    bool
-	streamClosed     bool
-	streamCmd        *exec.Cmd
-	streamStdin      io.WriteCloser
-	streamStdout     io.ReadCloser
-	streamOutput     *bytes.Buffer
-	streamOutputDone chan error
+	streamMode    bool
+	streamBuffer  *bytes.Buffer
+	streamLock    sync.Mutex
+	streamStarted bool
+	streamClosed  bool
+	streamCmd     *exec.Cmd
+	streamStdin   io.WriteCloser
+	streamStdout  io.ReadCloser
+	// streamOutput     *bytes.Buffer
+	// streamOutputDone chan error
 
 	// Ticker state
 	tickerMode     bool
@@ -290,8 +290,8 @@ func (c *Task) Start() error {
 
 	c.streamStarted = true
 	c.streamClosed = false
-	c.streamOutput = &bytes.Buffer{}
-	c.streamOutputDone = make(chan error, 1)
+	// c.streamOutput = &bytes.Buffer{}
+	// c.streamOutputDone = make(chan error, 1)
 
 	// Build command arguments
 	args := c.buildCommandArgs()
@@ -324,10 +324,10 @@ func (c *Task) Start() error {
 
 	// Start goroutine to continuously read stdout
 	// This prevents the sox process from blocking when stdout buffer is full
-	go func() {
-		_, err := io.Copy(c.streamOutput, stdout)
-		c.streamOutputDone <- err
-	}()
+	// go func() {
+	// 	_, err := io.Copy(c.streamOutput, stdout)
+	// 	c.streamOutputDone <- err
+	// }()
 
 	return nil
 }
@@ -420,9 +420,9 @@ func (c *Task) Stop() error {
 	}
 
 	// Wait for stdout reading to complete
-	if c.streamOutputDone != nil {
-		<-c.streamOutputDone
-	}
+	// if c.streamOutputDone != nil {
+	// 	<-c.streamOutputDone
+	// }
 
 	// Flush to output path if configured in stream mode
 	if c.outputPath != "" {
@@ -437,13 +437,24 @@ func (c *Task) flushStreamBuffer() error {
 	c.streamLock.Lock()
 	defer c.streamLock.Unlock()
 
-	if c.streamOutput == nil || c.streamOutput.Len() == 0 {
-		return fmt.Errorf("no stream output data to flush")
+	if c.streamBuffer == nil {
+		return fmt.Errorf("stream stdout not initialized")
+	}
+
+	// Read all remaining data from stdout
+	outputData, err := io.ReadAll(c.streamBuffer)
+
+	if err != nil {
+		return fmt.Errorf("failed to read stream output: %w", err)
+	}
+
+	if len(outputData) == 0 {
+		return nil
 	}
 
 	// Use Convert to ensure proper file format with headers
 	// This guarantees sox will create the file correctly with proper headers (WAV, FLAC, etc)
-	inputReader := bytes.NewReader(c.streamOutput.Bytes())
+	inputReader := bytes.NewReader(outputData)
 	return c.Convert(inputReader, c.outputPath)
 }
 
