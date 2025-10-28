@@ -451,9 +451,9 @@ func (c *Task) Stop() error {
 	}
 
 	// Flush to output path if configured in stream mode
-	if c.outputPath != "" {
-		return c.flushStreamBuffer()
-	}
+	// if c.outputPath != "" {
+	// 	return c.flushStreamBuffer()
+	// }
 
 	return nil
 }
@@ -699,7 +699,7 @@ func (c *Task) buildCommandArgs() []string {
 		args = append(args, c.Output.BuildArgs()...)
 
 		// Output destination for ticker mode with file output
-		if c.tickerMode && c.outputPath != "" {
+		if c.outputPath != "" {
 			args = append(args, c.outputPath)
 		} else {
 			args = append(args, "-") // stdout

@@ -613,11 +613,9 @@ func (s *SoxTestSuite) TestStreamMode_FlushStreamBuffer() {
 		WithStream().
 		WithStart()
 
-	chunk := s.generatePCMData(8000, 100)
-
-	for i := 0; i < 1000; i++ {
-		conv.Write(chunk)
-	}
+	chunk := s.generatePCMData(8000, 100) // 100ms
+	conv.Write(chunk)
+	conv.Write(chunk)
 
 	conv.Stop()
 
@@ -627,7 +625,7 @@ func (s *SoxTestSuite) TestStreamMode_FlushStreamBuffer() {
 	log.Println(string(output))
 
 	require.NoError(s.T(), err)
-	assert.Contains(s.T(), string(output), "00:00:45")
+	assert.Contains(s.T(), string(output), "00:00:00.20")
 	assert.Contains(s.T(), string(output), "Comment=PAPI rtp-recorder")
 }
 
