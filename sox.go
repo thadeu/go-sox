@@ -22,8 +22,9 @@ import (
 	"time"
 )
 
-// Converter handles audio format conversion using SoX with built-in resiliency
-type Converter struct {
+// sox.Task
+// Task handles audio format conversion using SoX with built-in resiliency
+type Task struct {
 	Input          AudioFormat
 	Output         AudioFormat
 	Options        ConversionOptions
@@ -55,9 +56,9 @@ type Converter struct {
 	inputPath string
 }
 
-// New creates a new Converter with input and output formats
-func New(input, output AudioFormat) *Converter {
-	return &Converter{
+// New creates a new Task with input and output formats
+func New(input, output AudioFormat) *Task {
+	return &Task{
 		Input:          input,
 		Output:         output,
 		Options:        DefaultOptions(),
@@ -69,14 +70,14 @@ func New(input, output AudioFormat) *Converter {
 	}
 }
 
-func NewTicker(input AudioFormat, output AudioFormat, interval time.Duration) *Converter {
+func NewTicker(input AudioFormat, output AudioFormat, interval time.Duration) *Task {
 	conv := New(input, output)
 	conv.WithTicker(interval)
 
 	return conv
 }
 
-func NewStream(input AudioFormat, output AudioFormat) *Converter {
+func NewStream(input AudioFormat, output AudioFormat) *Task {
 	conv := New(input, output)
 	conv.WithStream()
 
@@ -84,25 +85,25 @@ func NewStream(input AudioFormat, output AudioFormat) *Converter {
 }
 
 // WithOptions sets custom conversion options
-func (c *Converter) WithOptions(opts ConversionOptions) *Converter {
+func (c *Task) WithOptions(opts ConversionOptions) *Task {
 	c.Options = opts
 	return c
 }
 
 // WithCircuitBreaker sets a custom circuit breaker
-func (c *Converter) WithCircuitBreaker(cb *CircuitBreaker) *Converter {
+func (c *Task) WithCircuitBreaker(cb *CircuitBreaker) *Task {
 	c.circuitBreaker = cb
 	return c
 }
 
 // WithRetryConfig sets custom retry configuration
-func (c *Converter) WithRetryConfig(config RetryConfig) *Converter {
+func (c *Task) WithRetryConfig(config RetryConfig) *Task {
 	c.retryConfig = config
 	return c
 }
 
 // DisableResilience disables circuit breaker and retry (not recommended for production)
-func (c *Converter) DisableResilience() *Converter {
+func (c *Task) DisableResilience() *Task {
 	c.circuitBreaker = nil
 	c.retryConfig.MaxAttempts = 1
 	return c
@@ -110,25 +111,25 @@ func (c *Converter) DisableResilience() *Converter {
 
 // WithStream enables streaming mode for real-time data processing
 // In streaming mode, use Write() to send data and Read() to receive data
-func (c *Converter) WithStream() *Converter {
+func (c *Task) WithStream() *Task {
 	c.streamMode = true
 	return c
 }
 
 // WithTicker enables periodic conversion with specified interval
 // Each interval, the buffered data will be converted and output
-func (c *Converter) WithTicker(interval time.Duration) *Converter {
+func (c *Task) WithTicker(interval time.Duration) *Task {
 	c.tickerMode = true
 	c.tickerDuration = interval
 	return c
 }
 
-func (s *Converter) WithOutputPath(path string) *Converter {
+func (s *Task) WithOutputPath(path string) *Task {
 	s.outputPath = path
 	return s
 }
 
-func (s *Converter) WithStart() *Converter {
+func (s *Task) WithStart() *Task {
 	s.Start()
 
 	return s
@@ -139,7 +140,7 @@ func (s *Converter) WithStart() *Converter {
 // - Convert(io.Reader, io.Writer) for streaming I/O
 // - Convert(string, string) for file paths
 // - Mixes of Reader/Writer and string paths are supported
-func (c *Converter) Convert(args ...interface{}) error {
+func (c *Task) Convert(args ...interface{}) error {
 	ctx := context.Background()
 	if c.Options.Timeout > 0 {
 		var cancel context.CancelFunc
@@ -150,7 +151,7 @@ func (c *Converter) Convert(args ...interface{}) error {
 }
 
 // ConvertWithContext performs conversion with context and flexible arguments
-func (c *Converter) ConvertWithContext(ctx context.Context, args ...interface{}) error {
+func (c *Task) ConvertWithContext(ctx context.Context, args ...interface{}) error {
 	if len(args) < 2 {
 		return fmt.Errorf("convert requires at least 2 arguments (input and output)")
 	}
@@ -218,9 +219,9 @@ func (c *Converter) ConvertWithContext(ctx context.Context, args ...interface{})
 	return c.executeWithRetryStream(ctx, seekableInput, outputWriter)
 }
 
-// Write writes audio data to the converter
+// Write writes audio data to the Task
 // Only valid when using WithStream() mode
-func (c *Converter) Write(data []byte) (int, error) {
+func (c *Task) Write(data []byte) (int, error) {
 	if c.tickerMode {
 		c.tickerLock.Lock()
 		defer c.tickerLock.Unlock()
@@ -246,10 +247,10 @@ func (c *Converter) Write(data []byte) (int, error) {
 	return c.streamStdin.Write(data)
 }
 
-// Read reads converted audio data from the converter
+// Read reads converted audio data from the Task
 // Only valid when using WithStream() mode
 // Creates a copy of the current buffer to avoid data loss
-func (c *Converter) Read(b []byte) (int, error) {
+func (c *Task) Read(b []byte) (int, error) {
 	if !c.streamMode {
 		return 0, fmt.Errorf("read only available in stream mode")
 	}
@@ -264,10 +265,10 @@ func (c *Converter) Read(b []byte) (int, error) {
 	return c.streamStdout.Read(b)
 }
 
-// Start initializes the streaming converter
+// Start initializes the streaming Task
 // For streaming mode, starts the sox process
 // For ticker mode, starts the periodic conversion loop
-func (c *Converter) Start() error {
+func (c *Task) Start() error {
 	if c.tickerMode {
 		return c.runTicker()
 	}
@@ -316,7 +317,7 @@ func (c *Converter) Start() error {
 }
 
 // runTicker initializes the ticker-based conversion
-func (c *Converter) runTicker() error {
+func (c *Task) runTicker() error {
 	if c.tickerDuration <= 0 {
 		return fmt.Errorf("ticker duration must be positive")
 	}
@@ -342,7 +343,7 @@ func (c *Converter) runTicker() error {
 }
 
 // flushTickerBuffer converts buffered data (assumes lock is held)
-func (c *Converter) flushTickerBuffer() error {
+func (c *Task) flushTickerBuffer() error {
 	if c.tickerBuffer.Len() == 0 {
 		return nil
 	}
@@ -370,10 +371,10 @@ func (c *Converter) flushTickerBuffer() error {
 	return c.convertInternal(ctx, inputReader, outputBuffer)
 }
 
-// Stop stops the converter and closes resources
+// Stop stops the Task and closes resources
 // For streaming mode, closes the stdin pipe
 // For ticker mode, stops the ticker and flushes remaining data
-func (c *Converter) Stop() error {
+func (c *Task) Stop() error {
 	if c.tickerMode {
 		return c.stopTicker()
 	}
@@ -406,7 +407,7 @@ func (c *Converter) Stop() error {
 }
 
 // stopTicker stops the ticker and flushes remaining data
-func (c *Converter) stopTicker() error {
+func (c *Task) stopTicker() error {
 	if c.ticker != nil {
 		c.ticker.Stop()
 		close(c.tickerStop)
@@ -420,11 +421,11 @@ func (c *Converter) stopTicker() error {
 }
 
 // Close is an alias for Stop for compatibility
-func (c *Converter) Close() error {
+func (c *Task) Close() error {
 	return c.Stop()
 }
 
-func (c *Converter) executeWithRetry(ctx context.Context, inputPath, outputPath string) error {
+func (c *Task) executeWithRetry(ctx context.Context, inputPath, outputPath string) error {
 	backoff := c.retryConfig.InitialBackoff
 	var lastErr error
 
@@ -478,7 +479,7 @@ func (c *Converter) executeWithRetry(ctx context.Context, inputPath, outputPath 
 }
 
 // executeWithRetryStream handles stream-based conversion with I/O piping
-func (c *Converter) executeWithRetryStream(ctx context.Context, input io.ReadSeeker, output io.Writer) error {
+func (c *Task) executeWithRetryStream(ctx context.Context, input io.ReadSeeker, output io.Writer) error {
 	backoff := c.retryConfig.InitialBackoff
 	var lastErr error
 
@@ -537,7 +538,7 @@ func (c *Converter) executeWithRetryStream(ctx context.Context, input io.ReadSee
 }
 
 // convertInternal performs the actual SoX conversion without retry logic
-func (c *Converter) convertInternal(ctx context.Context, input io.Reader, output io.Writer) error {
+func (c *Task) convertInternal(ctx context.Context, input io.Reader, output io.Writer) error {
 	if err := c.Input.Validate(); err != nil {
 		return ErrInvalidFormat
 	}
@@ -578,7 +579,7 @@ func (c *Converter) convertInternal(ctx context.Context, input io.Reader, output
 }
 
 // convertInternalPath performs the actual SoX conversion for path-based mode
-func (c *Converter) convertInternalPath(ctx context.Context) error {
+func (c *Task) convertInternalPath(ctx context.Context) error {
 	if err := c.Input.Validate(); err != nil {
 		return ErrInvalidFormat
 	}
@@ -621,7 +622,7 @@ func (c *Converter) convertInternalPath(ctx context.Context) error {
 // buildCommandArgs constructs the complete SoX command arguments
 // For path mode: uses file paths directly (no pipes)
 // For stream/ticker mode: uses stdin/stdout pipes (-)
-func (c *Converter) buildCommandArgs() []string {
+func (c *Task) buildCommandArgs() []string {
 	args := []string{}
 
 	args = append(args, c.Options.BuildGlobalArgs()...)
