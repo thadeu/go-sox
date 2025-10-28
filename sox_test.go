@@ -3,7 +3,6 @@ package sox
 import (
 	"bytes"
 	"context"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -623,7 +622,6 @@ func (s *SoxTestSuite) TestStreamMode_FlushStreamBuffer() {
 
 	cmd := exec.Command("soxi", outputPath)
 	output, err := cmd.Output()
-	log.Println("output", string(output))
 
 	require.NoError(s.T(), err)
 	assert.Contains(s.T(), string(output), "00:00:45")
