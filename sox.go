@@ -32,14 +32,16 @@ type Task struct {
 	retryConfig    RetryConfig
 
 	// Streaming state
-	streamMode    bool
-	streamBuffer  *bytes.Buffer
-	streamLock    sync.Mutex
-	streamStarted bool
-	streamClosed  bool
-	streamCmd     *exec.Cmd
-	streamStdin   io.WriteCloser
-	streamStdout  io.ReadCloser
+	streamMode       bool
+	streamBuffer     *bytes.Buffer
+	streamLock       sync.Mutex
+	streamStarted    bool
+	streamClosed     bool
+	streamCmd        *exec.Cmd
+	streamStdin      io.WriteCloser
+	streamStdout     io.ReadCloser
+	streamOutput     *bytes.Buffer
+	streamOutputDone chan error
 
 	// Ticker state
 	tickerMode     bool
@@ -225,6 +227,7 @@ func (c *Task) Write(data []byte) (int, error) {
 	if c.tickerMode {
 		c.tickerLock.Lock()
 		defer c.tickerLock.Unlock()
+
 		return c.tickerBuffer.Write(data)
 	}
 
@@ -243,6 +246,10 @@ func (c *Task) Write(data []byte) (int, error) {
 	if c.streamStdin == nil {
 		return 0, fmt.Errorf("stream stdin not initialized")
 	}
+
+	c.streamLock.Lock()
+	defer c.streamLock.Unlock()
+	c.streamBuffer.Write(data)
 
 	return c.streamStdin.Write(data)
 }
@@ -283,6 +290,8 @@ func (c *Task) Start() error {
 
 	c.streamStarted = true
 	c.streamClosed = false
+	c.streamOutput = &bytes.Buffer{}
+	c.streamOutputDone = make(chan error, 1)
 
 	// Build command arguments
 	args := c.buildCommandArgs()
@@ -312,6 +321,13 @@ func (c *Task) Start() error {
 	}
 
 	c.streamCmd = cmd
+
+	// Start goroutine to continuously read stdout
+	// This prevents the sox process from blocking when stdout buffer is full
+	go func() {
+		_, err := io.Copy(c.streamOutput, stdout)
+		c.streamOutputDone <- err
+	}()
 
 	return nil
 }
@@ -403,7 +419,32 @@ func (c *Task) Stop() error {
 		}
 	}
 
+	// Wait for stdout reading to complete
+	if c.streamOutputDone != nil {
+		<-c.streamOutputDone
+	}
+
+	// Flush to output path if configured in stream mode
+	if c.outputPath != "" {
+		return c.flushStreamBuffer()
+	}
+
 	return nil
+}
+
+// flushStreamBuffer writes the buffered stream data to the output path
+func (c *Task) flushStreamBuffer() error {
+	c.streamLock.Lock()
+	defer c.streamLock.Unlock()
+
+	if c.streamOutput == nil || c.streamOutput.Len() == 0 {
+		return fmt.Errorf("no stream output data to flush")
+	}
+
+	// Use Convert to ensure proper file format with headers
+	// This guarantees sox will create the file correctly with proper headers (WAV, FLAC, etc)
+	inputReader := bytes.NewReader(c.streamOutput.Bytes())
+	return c.Convert(inputReader, c.outputPath)
 }
 
 // stopTicker stops the ticker and flushes remaining data
@@ -542,6 +583,7 @@ func (c *Task) convertInternal(ctx context.Context, input io.Reader, output io.W
 	if err := c.Input.Validate(); err != nil {
 		return ErrInvalidFormat
 	}
+
 	if err := c.Output.Validate(); err != nil {
 		return ErrInvalidFormat
 	}
@@ -569,9 +611,11 @@ func (c *Task) convertInternal(ctx context.Context, input io.Reader, output io.W
 
 	if err := cmd.Wait(); err != nil {
 		errMsg := <-stderrData
+
 		if ctx.Err() != nil {
 			return fmt.Errorf("sox conversion timeout/cancelled: %w", ctx.Err())
 		}
+
 		return fmt.Errorf("sox conversion failed: %w\nstderr: %s", err, string(errMsg))
 	}
 
@@ -583,6 +627,7 @@ func (c *Task) convertInternalPath(ctx context.Context) error {
 	if err := c.Input.Validate(); err != nil {
 		return ErrInvalidFormat
 	}
+
 	if err := c.Output.Validate(); err != nil {
 		return ErrInvalidFormat
 	}
@@ -594,6 +639,7 @@ func (c *Task) convertInternalPath(ctx context.Context) error {
 	cmd.Stdout = nil // No stdout for path-based conversion
 
 	stderr, err := cmd.StderrPipe()
+
 	if err != nil {
 		return fmt.Errorf("failed to create stderr pipe: %w", err)
 	}
@@ -603,6 +649,7 @@ func (c *Task) convertInternalPath(ctx context.Context) error {
 	}
 
 	stderrData := make(chan []byte, 1)
+
 	go func() {
 		data, _ := io.ReadAll(stderr)
 		stderrData <- data
@@ -610,6 +657,7 @@ func (c *Task) convertInternalPath(ctx context.Context) error {
 
 	if err := cmd.Wait(); err != nil {
 		errMsg := <-stderrData
+
 		if ctx.Err() != nil {
 			return fmt.Errorf("sox conversion timeout/cancelled: %w", ctx.Err())
 		}

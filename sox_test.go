@@ -3,7 +3,9 @@ package sox
 import (
 	"bytes"
 	"context"
+	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -598,6 +600,34 @@ func (s *SoxTestSuite) TestPathMode_FilesToFiles() {
 
 	s.T().Logf("✓ Path mode conversion succeeded: %s (%d bytes) -> %s (%d bytes)",
 		filepath.Base(inputPath), len(pcmData), filepath.Base(outputPath), info.Size())
+}
+
+func (s *SoxTestSuite) TestStreamMode_FlushStreamBuffer() {
+	outputPath := filepath.Join(s.tmpDir, "stream_output.flac")
+
+	outputFormat := FLAC_16K_MONO_LE
+	outputFormat.AddComment = "PAPI rtp-recorder"
+
+	conv := New(PCM_RAW_8K_MONO, outputFormat).
+		WithOutputPath(outputPath).
+		WithStream().
+		WithStart()
+
+	chunk := s.generatePCMData(8000, 100)
+
+	for i := 0; i < 1000; i++ {
+		conv.Write(chunk)
+	}
+
+	conv.Stop()
+
+	cmd := exec.Command("soxi", outputPath)
+	output, err := cmd.Output()
+	log.Println("output", string(output))
+
+	require.NoError(s.T(), err)
+	assert.Contains(s.T(), string(output), "00:00:45")
+	assert.Contains(s.T(), string(output), "Comment=PAPI rtp-recorder")
 }
 
 // BENCHMARK TESTS
