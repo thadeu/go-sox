@@ -150,7 +150,6 @@ All conversion modes support these builder methods:
 ```go
 conv := sox.New(inputFormat, outputFormat).
     WithOptions(customOptions).
-    WithPool(pool).
     WithRetryConfig(retryConfig).
     WithCircuitBreaker(circuitBreaker).
     DisableResilience()  // For non-critical conversions
@@ -177,14 +176,10 @@ retryConfig := sox.RetryConfig{
     BackoffMultiple: 2.0,
 }
 
-// Pool for concurrency control
-pool := sox.NewPoolWithLimit(10)
-
 // Build converter
 conv := sox.New(sox.PCM_RAW_8K_MONO, sox.FLAC_16K_MONO_LE).
     WithOptions(options).
-    WithRetryConfig(retryConfig).
-    WithPool(pool)
+    WithRetryConfig(retryConfig)
 ```
 
 ## Resilience Features
@@ -193,7 +188,6 @@ By default, all conversions include:
 
 1. **Automatic Retry**: Exponential backoff retries on transient failures
 2. **Circuit Breaker**: Prevents cascading failures when sox is unavailable
-3. **Pool-Based Concurrency Control**: Prevents resource exhaustion
 
 ### Disabling Resilience
 

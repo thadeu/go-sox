@@ -140,20 +140,6 @@ converter := sox.NewConverter(input, output).
     WithCircuitBreaker(breaker)
 ```
 
-#### 3. Worker Pool Concurrency Control
-
-```go
-// Prevents resource exhaustion by limiting concurrent SoX processes
-
-// Option 1: Auto-created pool (respects SOX_MAX_WORKERS env var, default: 500)
-converter := sox.NewConverter(input, output).WithPool()
-
-// Option 2: Custom pool limit
-pool := sox.NewPoolWithLimit(100)
-converter1 := sox.NewConverter(input, output).WithPool(pool)
-converter2 := sox.NewConverter(input, output).WithPool(pool)
-```
-
 ### Timeout Support
 
 Prevent conversions from hanging indefinitely:
@@ -171,27 +157,13 @@ defer cancel()
 converter.ConvertWithContext(ctx, input, output) // cancellation propagates
 ```
 
-### Resource Monitoring
-
-Track active processes and conversion statistics:
-
-```go
-monitor := sox.GetMonitor()
-stats := monitor.GetStats()
-
-fmt.Printf("Active processes: %d\n", stats.ActiveProcesses)
-fmt.Printf("Conversions completed: %d\n", stats.TotalConversions)
-fmt.Printf("Success rate: %.2f%%\n", stats.SuccessRate)
-```
-
 ## Usage Patterns
 
 ### Pattern 1: Batch Conversion
 
 ```go
 func convertBatch(files []string) error {
-    converter := sox.NewConverter(sox.PCM_RAW_16K_MONO, sox.FLAC_16K_MONO).
-        WithPool() // worker pool for parallelization
+    converter := sox.NewConverter(sox.PCM_RAW_16K_MONO, sox.FLAC_16K_MONO)
 
     for _, file := range files {
         outputFile := strings.TrimSuffix(file, ".pcm") + ".flac"
@@ -366,21 +338,16 @@ See [ADVANCED_OPTIONS.md](docs/ADVANCED_OPTIONS.md) for complete documentation.
 ```bash
 go test -v              # Run all tests
 go test -bench=.        # Run benchmarks
-go test -v -run TestPooled  # Test concurrent workload
 make test              # Using Makefile
 ```
 
 ## Production Deployment
 
-For high-load scenarios (100+ parallel conversions), configure system limits:
+For high-load scenarios, manage conversion throughput with concurrency control:
 
 ```bash
-# Set worker pool limit
-export SOX_MAX_WORKERS=500
-
-# Increase Linux ulimits (permanent configuration in /etc/security/limits.conf)
-ulimit -n 65536  # File descriptors
-ulimit -u 4096   # Max processes
+# Control throughput using goroutine workers or semaphores
+# The go-sox library handles retries and circuit breaker automatically
 ```
 
 ### Docker/Kubernetes
@@ -388,7 +355,6 @@ ulimit -u 4096   # Max processes
 ```dockerfile
 FROM ubuntu:22.04
 RUN apt-get update && apt-get install -y sox
-ENV SOX_MAX_WORKERS=500
 ```
 
 For detailed production deployment instructions, monitoring, and troubleshooting, see [PRODUCTION.md](docs/PRODUCTION.md).
@@ -426,8 +392,7 @@ See `examples/` directory:
 
 - `rtp_to_flac.go` - Various RTP conversion patterns
 - `sip_integration.go` - Production SIP/RTP handler
-- `incremental_flush.go` - Real-time streaming with incremental writes
-- `pool.go` - Worker pool usage patterns
+- `streaming_realtime.go` - Real-time streaming with concurrent I/O
 - `circuit_breaker.go` - Resiliency patterns
 
 ## Troubleshooting
@@ -457,12 +422,7 @@ converter.WithOptions(opts)
 
 ### Resource Exhaustion
 
-Enable worker pool to prevent process explosion:
-
-```go
-// Always add pool for production
-converter := sox.NewConverter(input, output).WithPool()
-```
+Manage conversion concurrency through goroutine workers or semaphores to control throughput.
 
 ## Contributing
 

@@ -312,9 +312,6 @@ func (c *Converter) Start() error {
 
 	c.streamCmd = cmd
 
-	// Track process
-	GetMonitor().TrackProcess(cmd.Process.Pid)
-
 	return nil
 }
 
@@ -403,7 +400,6 @@ func (c *Converter) Stop() error {
 		if err := c.streamCmd.Wait(); err != nil {
 			return fmt.Errorf("sox process failed: %w", err)
 		}
-		GetMonitor().UntrackProcess(c.streamCmd.Process.Pid)
 	}
 
 	return nil
@@ -555,13 +551,6 @@ func (c *Converter) convertInternal(ctx context.Context, input io.Reader, output
 	cmd.Stdin = input
 	cmd.Stdout = output
 
-	// if c.pool != nil {
-	// 	if err := c.pool.Acquire(ctx); err != nil {
-	// 		return fmt.Errorf("failed to acquire worker slot: %w", err)
-	// 	}
-	// 	defer c.pool.Release()
-	// }
-
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		return fmt.Errorf("failed to create stderr pipe: %w", err)
@@ -570,9 +559,6 @@ func (c *Converter) convertInternal(ctx context.Context, input io.Reader, output
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start sox: %w", err)
 	}
-
-	GetMonitor().TrackProcess(cmd.Process.Pid)
-	defer GetMonitor().UntrackProcess(cmd.Process.Pid)
 
 	stderrData := make(chan []byte, 1)
 	go func() {
@@ -614,9 +600,6 @@ func (c *Converter) convertInternalPath(ctx context.Context, inputPath, outputPa
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start sox: %w", err)
 	}
-
-	GetMonitor().TrackProcess(cmd.Process.Pid)
-	defer GetMonitor().UntrackProcess(cmd.Process.Pid)
 
 	stderrData := make(chan []byte, 1)
 	go func() {

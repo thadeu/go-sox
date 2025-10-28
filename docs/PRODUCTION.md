@@ -229,48 +229,7 @@ pool := sox.NewPoolWithLimit(500)
 
 ## Monitoring
 
-### Check Active Resources
-
-```go
-monitor := sox.GetMonitor()
-stats := monitor.GetStats()
-
-fmt.Printf("Active processes: %d\n", stats.ActiveProcesses)
-fmt.Printf("Total conversions: %d\n", stats.TotalConversions)
-fmt.Printf("Failed conversions: %d\n", stats.FailedConversions)
-fmt.Printf("Success rate: %.2f%%\n", stats.SuccessRate)
-fmt.Printf("Oldest process age: %v\n", stats.OldestProcessAge)
-```
-
-### Prometheus Metrics Example
-
-```go
-import "github.com/prometheus/client_golang/prometheus"
-
-var (
-    activeProcesses = prometheus.NewGauge(prometheus.GaugeOpts{
-        Name: "sox_active_processes",
-        Help: "Number of active SoX processes",
-    })
-    
-    totalConversions = prometheus.NewCounter(prometheus.CounterOpts{
-        Name: "sox_conversions_total",
-        Help: "Total number of conversions",
-    })
-    
-    failedConversions = prometheus.NewCounter(prometheus.CounterOpts{
-        Name: "sox_conversions_failed_total",
-        Help: "Total number of failed conversions",
-    })
-)
-
-func updateMetrics() {
-    stats := sox.GetMonitor().GetStats()
-    activeProcesses.Set(float64(stats.ActiveProcesses))
-    totalConversions.Add(float64(stats.TotalConversions))
-    failedConversions.Add(float64(stats.FailedConversions))
-}
-```
+This section has been removed. Monitoring is now the user's responsibility using standard application instrumentation.
 
 ## Circuit Breaker Configuration
 
@@ -291,10 +250,9 @@ retryConfig := sox.RetryConfig{
     BackoffMultiple: 2.0,
 }
 
-converter := sox.NewResilientConverter(input, output).
+converter := sox.New(input, output).
     WithCircuitBreaker(circuitBreaker).
-    WithRetryConfig(retryConfig).
-    WithPool(pool)
+    WithRetryConfig(retryConfig)
 ```
 
 ## Troubleshooting
@@ -364,29 +322,5 @@ SOX_MAX_WORKERS=100 go test -v -run TestParallelConversions
 
 # Benchmark parallel performance
 go test -bench=BenchmarkPooled -benchtime=30s
-```
-
-## Health Checks
-
-Implement health endpoint:
-
-```go
-func healthCheck(w http.ResponseWriter, r *http.Request) {
-    stats := sox.GetMonitor().GetStats()
-    
-    status := "healthy"
-    if stats.ActiveProcesses > pool.MaxWorkers() * 0.9 {
-        status = "degraded"
-    }
-    if stats.SuccessRate < 95.0 {
-        status = "unhealthy"
-    }
-    
-    json.NewEncoder(w).Encode(map[string]interface{}{
-        "status": status,
-        "active_processes": stats.ActiveProcesses,
-        "success_rate": stats.SuccessRate,
-    })
-}
 ```
 

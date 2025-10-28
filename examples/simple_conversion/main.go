@@ -83,7 +83,6 @@ func convertWithOptions() {
 
 	conv := sox.New(sox.PCM_RAW_8K_MONO, sox.FLAC_16K_MONO_LE).
 		WithOptions(options).
-		WithPool(sox.NewPoolWithLimit(5)).
 		WithRetryConfig(sox.RetryConfig{
 			MaxAttempts:     3,
 			InitialBackoff:  100 * 1e6,  // 100ms

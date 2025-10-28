@@ -137,7 +137,6 @@ go func() {
 ```go
 converter := sox.NewConverter(input, output)
 converter.WithOptions(options)
-converter.WithPool(pool)
 converter.WithRetryConfig(retryConfig)
 ```
 
@@ -146,7 +145,6 @@ converter.WithRetryConfig(retryConfig)
 ```go
 conv := sox.New(input, output).
     WithOptions(options).
-    WithPool(pool).
     WithRetryConfig(retryConfig).
     WithCircuitBreaker(cb).
     DisableResilience()
