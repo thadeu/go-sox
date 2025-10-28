@@ -42,8 +42,8 @@ type Converter struct {
 	streamStdout  io.ReadCloser
 
 	// Ticker state
-	ticker         *time.Ticker
 	tickerMode     bool
+	ticker         *time.Ticker
 	tickerDuration time.Duration
 	tickerStop     chan struct{}
 	tickerBuffer   *bytes.Buffer

@@ -488,12 +488,12 @@ func (s *SoxTestSuite) TestCommandArgs_TickerModeRealWorld() {
 	// Create converter with formats matching user's real-world use case
 	// Input: mu-law (G.711), Output: FLAC
 	input := AudioFormat{
-		Type:           "raw",
-		Encoding:       "mu-law",
-		SampleRate:     8000,
-		Channels:       1,
-		BitDepth:       8,
-		IgnoreLength:   true,
+		Type:         "raw",
+		Encoding:     "mu-law",
+		SampleRate:   8000,
+		Channels:     1,
+		BitDepth:     8,
+		IgnoreLength: true,
 	}
 
 	output := AudioFormat{
