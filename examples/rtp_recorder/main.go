@@ -48,8 +48,6 @@ func autoFlushExample() {
 		WithOutputPath("/tmp/test_auto.flac").
 		WithAutoStart(2 * time.Second) // Flush automatically after 2s!
 
-	converter.Start(2 * time.Second)
-
 	fmt.Println("   Writing RTP packets...")
 	// Simulate RTP packets
 	for i := 0; i < 100; i++ {

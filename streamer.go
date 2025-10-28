@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"log"
-	"os"
 	"os/exec"
 	"sync"
 	"time"
@@ -33,6 +32,11 @@ func NewStreamer(input, output AudioFormat) *Streamer {
 		buffer:     &bytes.Buffer{},
 		tickerStop: make(chan struct{}),
 	}
+}
+
+func (s *Streamer) WithAutoStart(interval time.Duration) *Streamer {
+	s.Start(interval)
+	return s
 }
 
 func (s *Streamer) WithOutputPath(path string) *Streamer {
@@ -91,30 +95,15 @@ func (s *Streamer) runTicker() {
 		select {
 		case <-s.ticker.C:
 			s.bufferLock.Lock()
+
 			if s.buffer.Len() > 0 {
-				// Build command with current buffer content
-				args := s.buildCommandArgs()
-				args = append(args, s.outputPath)
+				err := s.flush()
 
-				// Get SoX path
-				soxPath := s.Options.SoxPath
-				if soxPath == "" {
-					soxPath = "sox"
-				}
-
-				// Copy buffer data
-				inputData := make([]byte, s.buffer.Len())
-				copy(inputData, s.buffer.Bytes())
-
-				// Run command
-				cmd := exec.Command(soxPath, args...)
-				cmd.Stdin = bytes.NewReader(inputData)
-				cmd.Stderr = os.Stderr
-
-				if err := cmd.Run(); err != nil {
-					log.Printf("Error converting packets: %v", err)
+				if err != nil {
+					log.Printf("Error flushing buffer: %v", err)
 				}
 			}
+
 			s.bufferLock.Unlock()
 
 		case <-s.tickerStop:
@@ -170,18 +159,12 @@ func (s *Streamer) flush() error {
 	args := s.buildCommandArgs()
 	args = append(args, outputPath)
 
-	// Get SoX path
-	soxPath := s.Options.SoxPath
-	if soxPath == "" {
-		soxPath = "sox"
-	}
-
 	// Copy buffer data
 	inputData := make([]byte, s.buffer.Len())
 	copy(inputData, s.buffer.Bytes())
 
 	// Run command
-	cmd := exec.Command(soxPath, args...)
+	cmd := exec.Command(s.Options.SoxPath, args...)
 	cmd.Stdin = bytes.NewReader(inputData)
 
 	var stderr bytes.Buffer

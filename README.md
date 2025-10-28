@@ -60,43 +60,24 @@ converter := sox.NewConverter(input, output).
     WithPool(pool)
 ```
 
-### Streaming Conversion
-
-For scenarios where audio data arrives incrementally (RTP packets, live streams):
-
-```go
-stream := sox.NewStreamConverter(sox.PCM_RAW_16K_MONO, sox.FLAC_16K_MONO)
-stream.Start()
-
-// Write audio chunks as they arrive
-for packet := range rtpPackets {
-    stream.Write(packet.AudioData)
-}
-
-// Get converted output
-flacData, err := stream.Flush()
-```
-
 ### Auto-Flush (Incremental)
 
 Automatically flush and save incrementally during streaming:
 
 ```go
 // Auto-flush every 3 seconds - perfect for real-time processing!
-stream := sox.NewStreamConverter(sox.PCM_RAW_16K_MONO, sox.FLAC_16K_MONO).
+stream := sox.NewStreamer(sox.PCM_RAW_16K_MONO, sox.FLAC_16K_MONO).
     WithOutputPath("/app/recordings/call.flac").
-    WithAutoFlush(3 * time.Second)
-
-stream.Start()
+    WithAutoStart(3 * time.Second)
 
 // Write RTP packets continuously
 for packet := range rtpChannel {
-    stream.Write(packet.AudioData)
+    stream.Write(packet.Payload)
     // File grows incrementally - other processes can read it
 }
 
 // Final flush when done
-stream.Flush()
+stream.End()
 ```
 
 **Key Benefits:**

@@ -74,7 +74,7 @@ func (s *StreamerTestSuite) TestWithOutputPath() {
 
 	// Write data
 	for i := 0; i < 20; i++ {
-		chunk := s.generatePCMData(16000, 50) // 50ms chunks
+		chunk := s.generatePCMData(8000, 50) // 50ms chunks
 		_, err := stream.Write(chunk)
 		require.NoError(s.T(), err)
 	}
