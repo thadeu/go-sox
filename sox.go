@@ -438,10 +438,10 @@ func (c *Converter) executeWithRetry(ctx context.Context, inputPath, outputPath 
 		var err error
 		if c.circuitBreaker != nil {
 			err = c.circuitBreaker.Call(func() error {
-				return c.convertInternalPath(ctx, inputPath, outputPath)
+				return c.convertInternalPath(ctx)
 			})
 		} else {
-			err = c.convertInternalPath(ctx, inputPath, outputPath)
+			err = c.convertInternalPath(ctx)
 		}
 
 		if err == nil {
@@ -578,7 +578,7 @@ func (c *Converter) convertInternal(ctx context.Context, input io.Reader, output
 }
 
 // convertInternalPath performs the actual SoX conversion for path-based mode
-func (c *Converter) convertInternalPath(ctx context.Context, inputPath, outputPath string) error {
+func (c *Converter) convertInternalPath(ctx context.Context) error {
 	if err := c.Input.Validate(); err != nil {
 		return ErrInvalidFormat
 	}

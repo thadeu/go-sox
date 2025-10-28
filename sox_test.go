@@ -567,6 +567,39 @@ func (s *SoxTestSuite) TestCommandArgs_TickerModeRealWorld() {
 	s.T().Logf("✓ Command structure verified for user's RTP recorder use case")
 }
 
+// TestPathMode_FilesToFiles tests actual file-to-file path mode conversion
+func (s *SoxTestSuite) TestPathMode_FilesToFiles() {
+	if err := CheckSoxInstalled(""); err != nil {
+		s.T().Skip("SoX not installed")
+	}
+
+	inputPath := filepath.Join(s.tmpDir, "path_test_input.pcm")
+	outputPath := filepath.Join(s.tmpDir, "path_test_output.flac")
+
+	// Create input file with PCM data
+	pcmData := s.generatePCMData(8000, 1000)
+	err := os.WriteFile(inputPath, pcmData, 0644)
+	require.NoError(s.T(), err)
+
+	// Verify file was created
+	info, err := os.Stat(inputPath)
+	require.NoError(s.T(), err)
+	assert.Greater(s.T(), info.Size(), int64(0))
+
+	// Convert using path mode (both args are strings)
+	conv := New(PCM_RAW_8K_MONO, FLAC_16K_MONO_LE)
+	err = conv.Convert(inputPath, outputPath)
+	require.NoError(s.T(), err)
+
+	// Verify output file was created
+	info, err = os.Stat(outputPath)
+	require.NoError(s.T(), err)
+	assert.Greater(s.T(), info.Size(), int64(0), "Output file should be created with path mode")
+
+	s.T().Logf("✓ Path mode conversion succeeded: %s (%d bytes) -> %s (%d bytes)",
+		filepath.Base(inputPath), len(pcmData), filepath.Base(outputPath), info.Size())
+}
+
 // BENCHMARK TESTS
 // ═══════════════════════════════════════════════════════════
 
