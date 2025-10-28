@@ -57,7 +57,7 @@ func BenchmarkConverter_Convert(b *testing.B) {
 
 	// Generate test data once
 	pcmData := generateBenchmarkPCM(8000, 1, 1000) // 1 second of audio
-	converter := NewConverter(PCM_RAW_8K_MONO, FLAC_16K_MONO_LE)
+	converter := New(PCM_RAW_8K_MONO, FLAC_16K_MONO_LE)
 
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -73,13 +73,13 @@ func BenchmarkConverter_Convert(b *testing.B) {
 }
 
 // BenchmarkConverter_ConvertSmall benchmarks small audio conversion (100ms)
-func BenchmarkConverter_ConvertSmall(b *testing.B) {
+func TestConverter_ConvertSmall(b *testing.B) {
 	if err := CheckSoxInstalled(""); err != nil {
 		b.Skip("SoX not installed")
 	}
 
 	pcmData := generateBenchmarkPCM(8000, 1, 100) // 100ms
-	converter := NewConverter(PCM_RAW_8K_MONO, FLAC_16K_MONO_LE)
+	converter := New(PCM_RAW_8K_MONO, FLAC_16K_MONO_LE)
 
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -98,7 +98,7 @@ func BenchmarkConverter_ConvertLarge(b *testing.B) {
 	}
 
 	pcmData := generateBenchmarkPCM(8000, 1, 5000) // 5 seconds
-	converter := NewConverter(PCM_RAW_8K_MONO, FLAC_16K_MONO_LE)
+	converter := New(PCM_RAW_8K_MONO, FLAC_16K_MONO_LE)
 
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -160,7 +160,7 @@ func BenchmarkConverter_PCMToFLAC(b *testing.B) {
 	}
 
 	pcmData := generateBenchmarkPCM(8000, 1, 1000)
-	converter := NewConverter(PCM_RAW_8K_MONO, FLAC_16K_MONO_LE)
+	converter := New(PCM_RAW_8K_MONO, FLAC_16K_MONO_LE)
 
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -179,7 +179,7 @@ func BenchmarkConverter_PCMToWAV(b *testing.B) {
 	}
 
 	pcmData := generateBenchmarkPCM(8000, 1, 1000)
-	converter := NewConverter(PCM_RAW_8K_MONO, WAV_8K_MONO_LE)
+	converter := New(PCM_RAW_8K_MONO, WAV_8K_MONO_LE)
 
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -198,7 +198,7 @@ func BenchmarkConverter_PCMToULAW(b *testing.B) {
 	}
 
 	pcmData := generateBenchmarkPCM(8000, 1, 1000)
-	converter := NewConverter(PCM_RAW_8K_MONO, ULAW_8K_MONO)
+	converter := New(PCM_RAW_8K_MONO, ULAW_8K_MONO)
 
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -223,7 +223,7 @@ func BenchmarkConverter_WithPool(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		converter := NewConverter(PCM_RAW_8K_MONO, FLAC_16K_MONO_LE).
+		converter := New(PCM_RAW_8K_MONO, FLAC_16K_MONO_LE).
 			WithPool(pool)
 
 		input := bytes.NewReader(pcmData)
@@ -245,7 +245,7 @@ func BenchmarkConverter_Parallel(b *testing.B) {
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			converter := NewConverter(PCM_RAW_8K_MONO, FLAC_16K_MONO_LE)
+			converter := New(PCM_RAW_8K_MONO, FLAC_16K_MONO_LE)
 			input := bytes.NewReader(pcmData)
 			output := &bytes.Buffer{}
 			converter.Convert(input, output)

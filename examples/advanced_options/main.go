@@ -50,7 +50,7 @@ func example1_ExtendedFormatOptions() {
 		Comment:     "Generated with go-sox advanced options",
 	}
 
-	converter := sox.NewConverter(input, output)
+	converter := sox.New(input, output)
 
 	// Generate sample PCM data
 	pcmData := generateTestPCM(16000, 1, 100)
@@ -92,7 +92,7 @@ func example2_CustomArguments() {
 		CustomArgs: []string{"--add-comment", "Processed with custom args"},
 	}
 
-	converter := sox.NewConverter(input, output)
+	converter := sox.New(input, output)
 
 	// Generate sample PCM data
 	pcmData := generateTestPCM(8000, 1, 100)
@@ -132,7 +132,7 @@ func example3_GlobalOptions() {
 		Effects:          []string{"norm", "-3"}, // Normalize to -3dB
 	}
 
-	converter := sox.NewConverter(input, output).WithOptions(options)
+	converter := sox.New(input, output).WithOptions(options)
 
 	// Generate sample PCM data
 	pcmData := generateTestPCM(16000, 1, 100)
@@ -195,7 +195,7 @@ func example4_CompleteExample() {
 		},
 	}
 
-	converter := sox.NewConverter(input, output).
+	converter := sox.New(input, output).
 		WithOptions(options).
 		WithRetryConfig(sox.RetryConfig{
 			MaxAttempts: 3,

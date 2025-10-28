@@ -22,19 +22,18 @@ inputReader := bytes.NewReader(inputData)
 outputBuffer := &bytes.Buffer{}
 
 conv := sox.New(sox.PCM_RAW_8K_MONO, sox.FLAC_16K_MONO_LE)
+
 if err := conv.Convert(inputReader, outputBuffer); err != nil {
     log.Fatal(err)
 }
 
-// File to file conversion
-conv := sox.New(sox.PCM_RAW_8K_MONO, sox.FLAC_16K_MONO_LE)
 if err := conv.Convert("input.pcm", "output.flac"); err != nil {
     log.Fatal(err)
 }
 
 // Mixed: io.Reader input, file path output
 inputReader := os.Open("input.pcm")
-conv := sox.New(sox.PCM_RAW_8K_MONO, sox.FLAC_16K_MONO_LE)
+
 if err := conv.Convert(inputReader, "output.flac"); err != nil {
     log.Fatal(err)
 }
@@ -63,12 +62,13 @@ if err := conv.Start(); err != nil {
 // Write incoming audio packets
 for packet := range audioPackets {
     n, err := conv.Write(packet)
+    
     if err != nil {
         log.Printf("Write error: %v", err)
     }
 }
 
-// Stop and flush remaining data
+// Stop Ticker and flush remaining data
 if err := conv.Stop(); err != nil {
     log.Fatal(err)
 }
@@ -91,43 +91,50 @@ Stream data through sox with no buffering. Useful for applications that need tru
 
 ```go
 // Setup: streaming mode
-conv := sox.New(sox.PCM_RAW_8K_MONO, sox.FLAC_16K_MONO_LE).
-    WithStream()
+streamer := sox.New(sox.PCM_RAW_8K_MONO, sox.FLAC_16K_MONO_LE).
+  WithStream()
 
 // Start the streaming process
-if err := conv.Start(); err != nil {
+if err := streamer.Start(); err != nil {
     log.Fatal(err)
 }
 
 // Writer goroutine: send audio packets to sox
 go func() {
-    for packet := range audioPackets {
-        n, err := conv.Write(packet)
+    for packet := range audioBuffer {
+        n, err := streamer.Write(packet.Payload)
+
         if err != nil {
             log.Printf("Write failed: %v", err)
         }
+        
         fmt.Printf("Wrote %d bytes\n", n)
-    }
-    // Signal end of input
-    if err := conv.Stop(); err != nil {
-        log.Fatal(err)
     }
 }()
 
 // Reader goroutine: receive converted audio
 go func() {
     buffer := make([]byte, 4096)
+
     for {
-        n, err := conv.Read(buffer)
+        n, err := streamer.Read(buffer)
+
         if err != nil {
             break
         }
+
         if n > 0 {
             // Process converted audio
             processConvertedAudio(buffer[:n])
         }
     }
 }()
+
+// In the some moment, you can stop the streamer, close file and write headers (if you use wav or flac)
+// Signal end of input
+if err := streamer.Stop(); err != nil {
+    log.Fatal(err)
+}
 ```
 
 **Key differences from ticker mode:**

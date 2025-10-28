@@ -32,22 +32,24 @@ type Converter struct {
 	pool           *Pool
 
 	// Streaming state
-	streamMode     bool
-	streamBuffer   *bytes.Buffer
-	streamLock     sync.Mutex
-	streamStarted  bool
-	streamClosed   bool
-	streamCmd      *exec.Cmd
-	streamStdin    io.WriteCloser
-	streamStdout   io.ReadCloser
+	streamMode    bool
+	streamBuffer  *bytes.Buffer
+	streamLock    sync.Mutex
+	streamStarted bool
+	streamClosed  bool
+	streamCmd     *exec.Cmd
+	streamStdin   io.WriteCloser
+	streamStdout  io.ReadCloser
 
 	// Ticker state
+	ticker         *time.Ticker
 	tickerMode     bool
 	tickerDuration time.Duration
-	ticker         *time.Ticker
 	tickerStop     chan struct{}
 	tickerBuffer   *bytes.Buffer
 	tickerLock     sync.Mutex
+
+	outputPath string
 }
 
 // New creates a new Converter with input and output formats
@@ -63,12 +65,6 @@ func New(input, output AudioFormat) *Converter {
 		tickerBuffer:   &bytes.Buffer{},
 		tickerStop:     make(chan struct{}),
 	}
-}
-
-// NewConverter creates a new Converter with input and output formats
-// This is a backward compatibility wrapper around New()
-func NewConverter(input, output AudioFormat) *Converter {
-	return New(input, output)
 }
 
 // WithOptions sets custom conversion options
@@ -120,6 +116,11 @@ func (c *Converter) WithTicker(interval time.Duration) *Converter {
 	c.tickerMode = true
 	c.tickerDuration = interval
 	return c
+}
+
+func (s *Streamer) WithOutputPath(path string) *Streamer {
+	s.outputPath = path
+	return s
 }
 
 // Convert performs conversion with flexible argument handling
@@ -330,14 +331,13 @@ func (c *Converter) flushTickerBuffer() error {
 	inputData := make([]byte, c.tickerBuffer.Len())
 	copy(inputData, c.tickerBuffer.Bytes())
 
-	// Reset buffer after copying
-	c.tickerBuffer.Reset()
-
 	// Run conversion on copied data
 	ctx := context.Background()
+
 	if c.Options.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, c.Options.Timeout)
+
 		defer cancel()
 	}
 
@@ -517,9 +517,20 @@ func (c *Converter) buildCommandArgs() []string {
 
 	args = append(args, c.Options.BuildGlobalArgs()...)
 	args = append(args, c.Input.BuildArgs()...)
-	args = append(args, "-")
+
+	if c.streamMode && !c.Input.Pipe {
+		args = append(args, "-")
+	}
+
 	args = append(args, c.Output.BuildArgs()...)
-	args = append(args, "-")
+
+	if c.streamMode {
+		args = append(args, "-")
+	} else if c.tickerMode && c.outputPath != "" {
+		args = append(args, c.outputPath)
+	} else {
+		args = append(args, "-")
+	}
 
 	if effects := c.Options.buildEffectArgs(); len(effects) > 0 {
 		args = append(args, effects...)

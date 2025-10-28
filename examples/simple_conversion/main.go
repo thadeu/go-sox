@@ -85,9 +85,9 @@ func convertWithOptions() {
 		WithOptions(options).
 		WithPool(sox.NewPoolWithLimit(5)).
 		WithRetryConfig(sox.RetryConfig{
-			MaxAttempts:   3,
-			InitialBackoff: 100 * 1e6, // 100ms
-			MaxBackoff:    1000 * 1e6, // 1s
+			MaxAttempts:     3,
+			InitialBackoff:  100 * 1e6,  // 100ms
+			MaxBackoff:      1000 * 1e6, // 1s
 			BackoffMultiple: 2.0,
 		})
 

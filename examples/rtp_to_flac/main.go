@@ -34,7 +34,7 @@ func exampleBasicConversion() {
 	fmt.Printf("Generated %d bytes of PCM audio\n", len(pcmData))
 
 	// Create converter: PCM Raw 16kHz mono → FLAC 16kHz mono
-	converter := sox.NewConverter(sox.PCM_RAW_8K_MONO, sox.FLAC_16K_MONO_LE)
+	converter := sox.New(sox.PCM_RAW_8K_MONO, sox.FLAC_16K_MONO_LE)
 
 	// Convert
 	input := bytes.NewReader(pcmData)
@@ -159,7 +159,7 @@ func exampleCustomOptions() {
 	pcmData := simulateRTPPacket(8000, 1000)
 
 	// Create converter with custom options
-	converter := sox.NewConverter(sox.PCM_RAW_8K_MONO, sox.FLAC_16K_MONO_LE)
+	converter := sox.New(sox.PCM_RAW_8K_MONO, sox.FLAC_16K_MONO_LE)
 
 	// Configure options
 	opts := sox.DefaultOptions()
@@ -209,7 +209,7 @@ func exampleCustomFormat() {
 	// Generate 8kHz audio
 	pcmData := simulateRTPPacket(8000, 1000)
 
-	converter := sox.NewConverter(pcmTelephony, wavTelephony)
+	converter := sox.New(pcmTelephony, wavTelephony)
 
 	input := bytes.NewReader(pcmData)
 	output := &bytes.Buffer{}

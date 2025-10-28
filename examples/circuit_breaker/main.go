@@ -55,7 +55,7 @@ func main() {
 			pcmData := generateRTPAudio(8000, 1, 1000)
 
 			// Create converter with all protections (resilient by default)
-			converter := sox.NewConverter(sox.PCM_RAW_8K_MONO, sox.FLAC_16K_MONO_LE).
+			converter := sox.New(sox.PCM_RAW_8K_MONO, sox.FLAC_16K_MONO_LE).
 				WithCircuitBreaker(circuitBreaker).
 				WithRetryConfig(retryConfig).
 				WithPool(pool)
