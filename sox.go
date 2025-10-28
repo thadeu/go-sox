@@ -353,7 +353,7 @@ func (c *Task) flushTickerBuffer() error {
 	copy(inputData, c.tickerBuffer.Bytes())
 
 	// Reset buffer after copying to avoid duplicate processing
-	c.tickerBuffer.Reset()
+	// c.tickerBuffer.Reset()
 
 	// Run conversion on copied data
 	ctx := context.Background()
