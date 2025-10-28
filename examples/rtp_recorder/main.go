@@ -44,9 +44,10 @@ func main() {
 
 func autoFlushExample() {
 	// Auto-flush after 2 seconds - SUPER SIMPLE!
-	converter := sox.NewStreamer(sox.PCM_RAW_8K_MONO, sox.FLAC_16K_MONO_LE).
+	converter := sox.New(sox.PCM_RAW_8K_MONO, sox.FLAC_16K_MONO_LE).
+		WithTicker(2 * time.Second).
 		WithOutputPath("/tmp/test_auto.flac").
-		WithAutoStart(2 * time.Second) // Flush automatically after 2s!
+		WithStart() // Flush automatically after 2s!
 
 	fmt.Println("   Writing RTP packets...")
 	// Simulate RTP packets
@@ -63,10 +64,10 @@ func autoFlushExample() {
 }
 
 func manualFlushExample() {
-	converter := sox.NewStreamer(sox.PCM_RAW_8K_MONO, sox.FLAC_16K_MONO_LE).
-		WithOutputPath("/tmp/test_manual.flac")
-
-	converter.Start(2 * time.Second)
+	converter := sox.New(sox.PCM_RAW_8K_MONO, sox.FLAC_16K_MONO_LE).
+		WithTicker(2 * time.Second).
+		WithOutputPath("/tmp/test_manual.flac").
+		WithStart()
 
 	// Simulate RTP packets
 	for i := 0; i < 50; i++ {
@@ -76,6 +77,6 @@ func manualFlushExample() {
 	}
 
 	// Manual flush when you want
-	converter.End()
+	converter.Stop()
 	fmt.Println("   File saved to /tmp/test_manual.flac")
 }

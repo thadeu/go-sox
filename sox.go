@@ -50,6 +50,10 @@ type Converter struct {
 	tickerLock     sync.Mutex
 
 	outputPath string
+	
+	// Path mode (direct file handling, no piping)
+	pathMode  bool
+	inputPath string
 }
 
 // New creates a new Converter with input and output formats
@@ -67,17 +71,18 @@ func New(input, output AudioFormat) *Converter {
 	}
 }
 
-// NewConverter creates a new Converter with input and output formats
-// This is a backward compatibility wrapper around New()
-func NewConverter(input, output AudioFormat) *Converter {
-	return New(input, output)
+func NewTicker(input AudioFormat, output AudioFormat, interval time.Duration) *Converter {
+	conv := New(input, output)
+	conv.WithTicker(interval)
+
+	return conv
 }
 
-// NewStreamer creates a new Streamer (now mapped to Converter with ticker mode)
-// This is a backward compatibility wrapper around New() + WithTicker()
-// Deprecated: use New() + WithTicker() + Start() instead
-func NewStreamer(input, output AudioFormat) *Converter {
-	return New(input, output)
+func NewStream(input AudioFormat, output AudioFormat) *Converter {
+	conv := New(input, output)
+	conv.WithStream()
+
+	return conv
 }
 
 // WithOptions sets custom conversion options
@@ -166,6 +171,18 @@ func (c *Converter) ConvertWithContext(ctx context.Context, args ...interface{})
 	input := args[0]
 	output := args[1]
 
+	// Check if this is path-based conversion (optimize by avoiding piping)
+	if inputPath, ok := input.(string); ok {
+		if outputPath, ok := output.(string); ok {
+			// Both are paths - use direct file mode (no piping)
+			c.pathMode = true
+			c.inputPath = inputPath
+			c.outputPath = outputPath
+			return c.executeWithRetryPath(ctx, inputPath, outputPath)
+		}
+	}
+
+	// Stream-based conversion (using readers/writers)
 	// Detect input type
 	var inputReader io.Reader
 	switch v := input.(type) {
@@ -210,7 +227,7 @@ func (c *Converter) ConvertWithContext(ctx context.Context, args ...interface{})
 		seekableInput = newBytesReader(data)
 	}
 
-	// Execute with retry and circuit breaker
+	// Execute with retry and circuit breaker (stream-based)
 	return c.executeWithRetry(ctx, seekableInput, outputWriter)
 }
 
@@ -481,6 +498,60 @@ func (c *Converter) executeWithRetry(ctx context.Context, input io.ReadSeeker, o
 	return fmt.Errorf("conversion failed after %d attempts: %w", c.retryConfig.MaxAttempts, lastErr)
 }
 
+// executeWithRetryPath handles path-based conversion with direct file access (no piping)
+func (c *Converter) executeWithRetryPath(ctx context.Context, inputPath, outputPath string) error {
+	backoff := c.retryConfig.InitialBackoff
+	var lastErr error
+
+	for attempt := 0; attempt < c.retryConfig.MaxAttempts; attempt++ {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("conversion cancelled: %w", ctx.Err())
+		default:
+		}
+
+		var err error
+		if c.circuitBreaker != nil {
+			err = c.circuitBreaker.Call(func() error {
+				return c.convertInternalPath(ctx, inputPath, outputPath)
+			})
+		} else {
+			err = c.convertInternalPath(ctx, inputPath, outputPath)
+		}
+
+		if err == nil {
+			return nil
+		}
+
+		lastErr = err
+
+		if c.circuitBreaker != nil && err == ErrCircuitOpen {
+			return err
+		}
+
+		if err == ErrInvalidFormat {
+			return err
+		}
+
+		if attempt == c.retryConfig.MaxAttempts-1 {
+			break
+		}
+
+		select {
+		case <-time.After(backoff):
+		case <-ctx.Done():
+			return fmt.Errorf("conversion cancelled during backoff: %w", ctx.Err())
+		}
+
+		backoff = time.Duration(float64(backoff) * c.retryConfig.BackoffMultiple)
+		if backoff > c.retryConfig.MaxBackoff {
+			backoff = c.retryConfig.MaxBackoff
+		}
+	}
+
+	return fmt.Errorf("conversion failed after %d attempts: %w", c.retryConfig.MaxAttempts, lastErr)
+}
+
 // convertInternal performs the actual SoX conversion without retry logic
 func (c *Converter) convertInternal(ctx context.Context, input io.Reader, output io.Writer) error {
 	if err := c.Input.Validate(); err != nil {
@@ -533,23 +604,84 @@ func (c *Converter) convertInternal(ctx context.Context, input io.Reader, output
 	return nil
 }
 
+// convertInternalPath performs the actual SoX conversion for path-based mode
+func (c *Converter) convertInternalPath(ctx context.Context, inputPath, outputPath string) error {
+	if err := c.Input.Validate(); err != nil {
+		return ErrInvalidFormat
+	}
+	if err := c.Output.Validate(); err != nil {
+		return ErrInvalidFormat
+	}
+
+	// Acquire pool slot if configured
+	if c.pool != nil {
+		if err := c.pool.Acquire(ctx); err != nil {
+			return fmt.Errorf("failed to acquire worker slot: %w", err)
+		}
+		defer c.pool.Release()
+	}
+
+	args := c.buildCommandArgs()
+	cmd := exec.CommandContext(ctx, c.Options.SoxPath, args...)
+
+	cmd.Stdin = nil // No stdin for path-based conversion
+	cmd.Stdout = nil // No stdout for path-based conversion
+
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("failed to create stderr pipe: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start sox: %w", err)
+	}
+
+	GetMonitor().TrackProcess(cmd.Process.Pid)
+	defer GetMonitor().UntrackProcess(cmd.Process.Pid)
+
+	stderrData := make(chan []byte, 1)
+	go func() {
+		data, _ := io.ReadAll(stderr)
+		stderrData <- data
+	}()
+
+	if err := cmd.Wait(); err != nil {
+		errMsg := <-stderrData
+		if ctx.Err() != nil {
+			return fmt.Errorf("sox conversion timeout/cancelled: %w", ctx.Err())
+		}
+		return fmt.Errorf("sox conversion failed: %w\nstderr: %s", err, string(errMsg))
+	}
+
+	return nil
+}
+
 // buildCommandArgs constructs the complete SoX command arguments
+// For path mode: uses file paths directly (no pipes)
+// For stream/ticker mode: uses stdin/stdout pipes (-)
 func (c *Converter) buildCommandArgs() []string {
 	args := []string{}
 
 	args = append(args, c.Options.BuildGlobalArgs()...)
 	args = append(args, c.Input.BuildArgs()...)
 
-	// Add input source (always stdin)
-	args = append(args, "-")
-
-	args = append(args, c.Output.BuildArgs()...)
-
-	// Add output destination
-	if c.tickerMode && c.outputPath != "" {
+	// Path mode: use file paths directly (no piping needed)
+	if c.pathMode {
+		args = append(args, c.inputPath)
+		args = append(args, c.Output.BuildArgs()...)
 		args = append(args, c.outputPath)
 	} else {
-		args = append(args, "-")
+		// Stream/ticker mode: use stdin/stdout pipes
+		args = append(args, "-") // stdin
+
+		args = append(args, c.Output.BuildArgs()...)
+
+		// Output destination for ticker mode with file output
+		if c.tickerMode && c.outputPath != "" {
+			args = append(args, c.outputPath)
+		} else {
+			args = append(args, "-") // stdout
+		}
 	}
 
 	if effects := c.Options.buildEffectArgs(); len(effects) > 0 {

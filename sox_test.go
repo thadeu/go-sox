@@ -314,12 +314,12 @@ func (s *SoxTestSuite) TestStream_ReadBeforeStart() {
 // TEST SUITE 4: Backward Compatibility
 // ═══════════════════════════════════════════════════════════
 
-// TestBackwardCompat_NewConverter verifies NewConverter() still works
+// TestBackwardCompat_New verifies New() still works
 func (s *SoxTestSuite) TestBackwardCompat_NewConverter() {
 	pcmData := s.generatePCMData(8000, 1000)
 
-	// Old API: NewConverter()
-	conv := NewConverter(PCM_RAW_8K_MONO, FLAC_16K_MONO_LE)
+	// Old API: New()
+	conv := New(PCM_RAW_8K_MONO, FLAC_16K_MONO_LE)
 	inputReader := bytes.NewReader(pcmData)
 	outputBuffer := &bytes.Buffer{}
 
@@ -328,10 +328,10 @@ func (s *SoxTestSuite) TestBackwardCompat_NewConverter() {
 	assert.Greater(s.T(), outputBuffer.Len(), 0)
 }
 
-// TestBackwardCompat_NewStreamer verifies NewStreamer() still works
-func (s *SoxTestSuite) TestBackwardCompat_NewStreamer() {
-	// Old API: NewStreamer() returns Converter
-	conv := NewStreamer(PCM_RAW_8K_MONO, FLAC_16K_MONO_LE)
+// TestBackwardCompat_New verifies New() still works
+func (s *SoxTestSuite) TestBackwardCompat_NewTicker() {
+	// Old API: New() returns Converter
+	conv := New(PCM_RAW_8K_MONO, FLAC_16K_MONO_LE)
 	require.NotNil(s.T(), conv)
 
 	// Should be able to use it as new API

@@ -59,11 +59,11 @@ func exampleStreamingConversion() {
 	fmt.Println("=== Example 2: Streaming Conversion (RTP Accumulation) ===")
 
 	// Create stream converter
-	stream := sox.NewStreamer(sox.PCM_RAW_8K_MONO, sox.FLAC_16K_MONO_LE)
+	stream := sox.New(sox.PCM_RAW_8K_MONO, sox.FLAC_16K_MONO_LE).
+		WithTicker(3 * time.Second).
+		WithStart()
 
 	// Start the conversion process
-	stream.Start(3 * time.Second)
-
 	fmt.Println("Stream started, simulating RTP packet reception...")
 
 	// Simulate receiving RTP packets (20ms each at 16kHz = 320 bytes)
@@ -88,7 +88,7 @@ func exampleStreamingConversion() {
 	fmt.Printf("Received %d packets\n", numPackets)
 
 	// Flush and get the complete FLAC output
-	err := stream.End()
+	err := stream.Stop()
 	if err != nil {
 		log.Fatalf("Failed to flush stream: %v", err)
 	}
@@ -109,8 +109,9 @@ func exampleRTPWorkerPattern() {
 	)
 
 	// Create stream converter
-	stream := sox.NewStreamer(sox.PCM_RAW_8K_MONO, sox.FLAC_16K_MONO_LE)
-	stream.Start(3 * time.Second)
+	stream := sox.New(sox.PCM_RAW_8K_MONO, sox.FLAC_16K_MONO_LE).
+		WithTicker(3 * time.Second).
+		WithStart()
 
 	accumulatedMs := 0
 	packetsProcessed := 0
@@ -134,14 +135,16 @@ func exampleRTPWorkerPattern() {
 		// Check if we've accumulated enough audio
 		if accumulatedMs >= maxAccumulationMs {
 			// Flush current stream and get FLAC data
-			err := stream.End()
+			err := stream.Stop()
 			if err != nil {
 				log.Fatalf("End failed: %v", err)
 			}
 
 			// Reset for next batch
-			stream = sox.NewStreamer(sox.PCM_RAW_8K_MONO, sox.FLAC_16K_MONO_LE)
-			stream.Start(3 * time.Second)
+			stream = sox.New(sox.PCM_RAW_8K_MONO, sox.FLAC_16K_MONO_LE).
+				WithTicker(3 * time.Second).
+				WithStart()
+
 			accumulatedMs = 0
 			packetsProcessed = 0
 		}

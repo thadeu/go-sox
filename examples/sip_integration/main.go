@@ -22,7 +22,7 @@ func (t *TranscriptionAPI) Transcribe(audioData []byte) (string, error) {
 
 // RTPMediaHandler handles incoming RTP media and converts to FLAC for transcription
 type RTPMediaHandler struct {
-	stream           *sox.Streamer
+	stream           *sox.Converter
 	transcriptionCh  chan []byte
 	maxBufferMs      int
 	accumulatedMs    int
@@ -42,15 +42,16 @@ func NewRTPMediaHandler(maxBufferMs, packetDurationMs int) *RTPMediaHandler {
 // Start initializes the RTP handler
 func (h *RTPMediaHandler) Start() error {
 	// Initialize SoX stream converter: PCM Raw 16kHz mono → FLAC
-	h.stream = sox.NewStreamer(sox.PCM_RAW_8K_MONO, sox.FLAC_16K_MONO_LE)
+	h.stream = sox.New(sox.PCM_RAW_8K_MONO, sox.FLAC_16K_MONO_LE)
 
 	// Configure for optimal performance
 	opts := sox.DefaultOptions()
 	opts.CompressionLevel = 5 // Balance between size and speed
 	opts.BufferSize = 64 * 1024
 	h.stream.WithOptions(opts)
+	h.stream.WithTicker(3 * time.Second)
 
-	h.stream.Start(3 * time.Second)
+	h.stream.Start()
 	return nil
 }
 
@@ -70,7 +71,7 @@ func (h *RTPMediaHandler) HandleRTPPacket(pcmData []byte) error {
 	// Check if we've accumulated enough audio for transcription
 	if h.accumulatedMs >= h.maxBufferMs {
 		// Flush and get FLAC output
-		err := h.stream.End()
+		err := h.stream.Stop()
 		if err != nil {
 			return fmt.Errorf("failed to flush stream: %w", err)
 		}
@@ -105,14 +106,14 @@ func (h *RTPMediaHandler) Stop() error {
 
 	// Flush any remaining data
 	if h.accumulatedMs > 0 {
-		err := h.stream.End()
+		err := h.stream.Stop()
 		if err != nil {
 			return fmt.Errorf("failed to flush stream: %w", err)
 		}
 	}
 
 	close(h.transcriptionCh)
-	return h.stream.End()
+	return h.stream.Stop()
 }
 
 // simulateRTPStream simulates receiving RTP packets for demonstration
