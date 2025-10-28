@@ -736,28 +736,6 @@ func BenchmarkConverter_PCMToULAW(b *testing.B) {
 	}
 }
 
-// BenchmarkConverter_WithPool benchmarks conversion with pool
-func BenchmarkConverter_WithPool(b *testing.B) {
-	if err := CheckSoxInstalled(""); err != nil {
-		b.Skip("SoX not installed")
-	}
-
-	pcmData := generateBenchmarkPCM(8000, 1, 1000)
-	pool := NewPoolWithLimit(10)
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
-		converter := New(PCM_RAW_8K_MONO, FLAC_16K_MONO_LE).
-			WithPool(pool)
-
-		input := bytes.NewReader(pcmData)
-		output := &bytes.Buffer{}
-		converter.Convert(input, output)
-	}
-}
-
 // BenchmarkConverter_Parallel benchmarks parallel conversions
 func BenchmarkConverter_Parallel(b *testing.B) {
 	if err := CheckSoxInstalled(""); err != nil {

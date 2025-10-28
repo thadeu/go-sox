@@ -29,7 +29,6 @@ type Converter struct {
 	Options        ConversionOptions
 	circuitBreaker *CircuitBreaker
 	retryConfig    RetryConfig
-	pool           *Pool
 
 	// Streaming state
 	streamMode    bool
@@ -64,7 +63,6 @@ func New(input, output AudioFormat) *Converter {
 		Options:        DefaultOptions(),
 		circuitBreaker: NewCircuitBreaker(),
 		retryConfig:    DefaultRetryConfig(),
-		pool:           nil,
 		streamBuffer:   &bytes.Buffer{},
 		tickerBuffer:   &bytes.Buffer{},
 		tickerStop:     make(chan struct{}),
@@ -100,17 +98,6 @@ func (c *Converter) WithCircuitBreaker(cb *CircuitBreaker) *Converter {
 // WithRetryConfig sets custom retry configuration
 func (c *Converter) WithRetryConfig(config RetryConfig) *Converter {
 	c.retryConfig = config
-	return c
-}
-
-// WithPool adds pool-based concurrency control
-// If pool is nil, creates a new default pool
-func (c *Converter) WithPool(pool ...*Pool) *Converter {
-	if len(pool) > 0 && pool[0] != nil {
-		c.pool = pool[0]
-	} else {
-		c.pool = NewPool()
-	}
 	return c
 }
 
@@ -178,7 +165,7 @@ func (c *Converter) ConvertWithContext(ctx context.Context, args ...interface{})
 			c.pathMode = true
 			c.inputPath = inputPath
 			c.outputPath = outputPath
-			return c.executeWithRetryPath(ctx, inputPath, outputPath)
+			return c.executeWithRetry(ctx, inputPath, outputPath)
 		}
 	}
 
@@ -228,7 +215,7 @@ func (c *Converter) ConvertWithContext(ctx context.Context, args ...interface{})
 	}
 
 	// Execute with retry and circuit breaker (stream-based)
-	return c.executeWithRetry(ctx, seekableInput, outputWriter)
+	return c.executeWithRetryStream(ctx, seekableInput, outputWriter)
 }
 
 // Write writes audio data to the converter
@@ -441,65 +428,7 @@ func (c *Converter) Close() error {
 	return c.Stop()
 }
 
-func (c *Converter) executeWithRetry(ctx context.Context, input io.ReadSeeker, output io.Writer) error {
-	backoff := c.retryConfig.InitialBackoff
-	var lastErr error
-
-	for attempt := 0; attempt < c.retryConfig.MaxAttempts; attempt++ {
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("conversion cancelled: %w", ctx.Err())
-		default:
-		}
-
-		var err error
-		if c.circuitBreaker != nil {
-			err = c.circuitBreaker.Call(func() error {
-				return c.convertInternal(ctx, input, output)
-			})
-		} else {
-			err = c.convertInternal(ctx, input, output)
-		}
-
-		if err == nil {
-			return nil
-		}
-
-		lastErr = err
-
-		if c.circuitBreaker != nil && err == ErrCircuitOpen {
-			return err
-		}
-
-		if err == ErrInvalidFormat {
-			return err
-		}
-
-		if attempt == c.retryConfig.MaxAttempts-1 {
-			break
-		}
-
-		select {
-		case <-time.After(backoff):
-		case <-ctx.Done():
-			return fmt.Errorf("conversion cancelled during backoff: %w", ctx.Err())
-		}
-
-		backoff = time.Duration(float64(backoff) * c.retryConfig.BackoffMultiple)
-		if backoff > c.retryConfig.MaxBackoff {
-			backoff = c.retryConfig.MaxBackoff
-		}
-
-		if _, err := input.Seek(0, io.SeekStart); err != nil {
-			return fmt.Errorf("failed to seek input for retry: %w", err)
-		}
-	}
-
-	return fmt.Errorf("conversion failed after %d attempts: %w", c.retryConfig.MaxAttempts, lastErr)
-}
-
-// executeWithRetryPath handles path-based conversion with direct file access (no piping)
-func (c *Converter) executeWithRetryPath(ctx context.Context, inputPath, outputPath string) error {
+func (c *Converter) executeWithRetry(ctx context.Context, inputPath, outputPath string) error {
 	backoff := c.retryConfig.InitialBackoff
 	var lastErr error
 
@@ -552,6 +481,65 @@ func (c *Converter) executeWithRetryPath(ctx context.Context, inputPath, outputP
 	return fmt.Errorf("conversion failed after %d attempts: %w", c.retryConfig.MaxAttempts, lastErr)
 }
 
+// executeWithRetryStream handles stream-based conversion with I/O piping
+func (c *Converter) executeWithRetryStream(ctx context.Context, input io.ReadSeeker, output io.Writer) error {
+	backoff := c.retryConfig.InitialBackoff
+	var lastErr error
+
+	for attempt := 0; attempt < c.retryConfig.MaxAttempts; attempt++ {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("conversion cancelled: %w", ctx.Err())
+		default:
+		}
+
+		var err error
+		if c.circuitBreaker != nil {
+			err = c.circuitBreaker.Call(func() error {
+				return c.convertInternal(ctx, input, output)
+			})
+		} else {
+			err = c.convertInternal(ctx, input, output)
+		}
+
+		if err == nil {
+			return nil
+		}
+
+		lastErr = err
+
+		if c.circuitBreaker != nil && err == ErrCircuitOpen {
+			return err
+		}
+
+		if err == ErrInvalidFormat {
+			return err
+		}
+
+		if attempt == c.retryConfig.MaxAttempts-1 {
+			break
+		}
+
+		select {
+		case <-time.After(backoff):
+		case <-ctx.Done():
+			return fmt.Errorf("conversion cancelled during backoff: %w", ctx.Err())
+		}
+
+		backoff = time.Duration(float64(backoff) * c.retryConfig.BackoffMultiple)
+		if backoff > c.retryConfig.MaxBackoff {
+			backoff = c.retryConfig.MaxBackoff
+		}
+
+		// Reset input position for retry
+		if _, err := input.Seek(0, io.SeekStart); err != nil {
+			return fmt.Errorf("failed to seek input for retry: %w", err)
+		}
+	}
+
+	return fmt.Errorf("conversion failed after %d attempts: %w", c.retryConfig.MaxAttempts, lastErr)
+}
+
 // convertInternal performs the actual SoX conversion without retry logic
 func (c *Converter) convertInternal(ctx context.Context, input io.Reader, output io.Writer) error {
 	if err := c.Input.Validate(); err != nil {
@@ -561,19 +549,18 @@ func (c *Converter) convertInternal(ctx context.Context, input io.Reader, output
 		return ErrInvalidFormat
 	}
 
-	// Acquire pool slot if configured
-	if c.pool != nil {
-		if err := c.pool.Acquire(ctx); err != nil {
-			return fmt.Errorf("failed to acquire worker slot: %w", err)
-		}
-		defer c.pool.Release()
-	}
-
 	args := c.buildCommandArgs()
 	cmd := exec.CommandContext(ctx, c.Options.SoxPath, args...)
 
 	cmd.Stdin = input
 	cmd.Stdout = output
+
+	// if c.pool != nil {
+	// 	if err := c.pool.Acquire(ctx); err != nil {
+	// 		return fmt.Errorf("failed to acquire worker slot: %w", err)
+	// 	}
+	// 	defer c.pool.Release()
+	// }
 
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
@@ -611,14 +598,6 @@ func (c *Converter) convertInternalPath(ctx context.Context, inputPath, outputPa
 	}
 	if err := c.Output.Validate(); err != nil {
 		return ErrInvalidFormat
-	}
-
-	// Acquire pool slot if configured
-	if c.pool != nil {
-		if err := c.pool.Acquire(ctx); err != nil {
-			return fmt.Errorf("failed to acquire worker slot: %w", err)
-		}
-		defer c.pool.Release()
 	}
 
 	args := c.buildCommandArgs()
