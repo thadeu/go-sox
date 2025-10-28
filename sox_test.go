@@ -627,7 +627,7 @@ func (s *SoxTestSuite) TestStreamMode_FlushStreamBuffer() {
 	log.Println(string(output))
 
 	require.NoError(s.T(), err)
-	assert.Contains(s.T(), string(output), "00:01:40")
+	assert.Contains(s.T(), string(output), "00:00:45")
 	assert.Contains(s.T(), string(output), "Comment=PAPI rtp-recorder")
 }
 

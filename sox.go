@@ -387,6 +387,32 @@ func (c *Task) flushTickerBuffer() error {
 	return c.convertInternal(ctx, inputReader, outputBuffer)
 }
 
+// flushStreamBuffer writes the buffered stream data to the output path
+func (c *Task) flushStreamBuffer() error {
+	c.streamLock.Lock()
+	defer c.streamLock.Unlock()
+
+	if c.streamOutput == nil {
+		return fmt.Errorf("stream output not initialized")
+	}
+
+	// Read all remaining data from stdout (already converted by sox)
+	outputData, err := io.ReadAll(c.streamOutput)
+
+	if err != nil {
+		return fmt.Errorf("failed to read stream output: %w", err)
+	}
+
+	if len(outputData) == 0 {
+		return nil
+	}
+
+	// Use Convert to ensure proper file format with headers
+	// This guarantees sox will create the file correctly with proper headers (WAV, FLAC, etc)
+	inputReader := bytes.NewReader(outputData)
+	return c.Convert(inputReader, c.outputPath)
+}
+
 // Stop stops the Task and closes resources
 // For streaming mode, closes the stdin pipe
 // For ticker mode, stops the ticker and flushes remaining data
@@ -430,32 +456,6 @@ func (c *Task) Stop() error {
 	}
 
 	return nil
-}
-
-// flushStreamBuffer writes the buffered stream data to the output path
-func (c *Task) flushStreamBuffer() error {
-	c.streamLock.Lock()
-	defer c.streamLock.Unlock()
-
-	if c.streamBuffer == nil {
-		return fmt.Errorf("stream stdout not initialized")
-	}
-
-	// Read all remaining data from stdout
-	outputData, err := io.ReadAll(c.streamBuffer)
-
-	if err != nil {
-		return fmt.Errorf("failed to read stream output: %w", err)
-	}
-
-	if len(outputData) == 0 {
-		return nil
-	}
-
-	// Use Convert to ensure proper file format with headers
-	// This guarantees sox will create the file correctly with proper headers (WAV, FLAC, etc)
-	inputReader := bytes.NewReader(outputData)
-	return c.Convert(inputReader, c.outputPath)
 }
 
 // stopTicker stops the ticker and flushes remaining data
