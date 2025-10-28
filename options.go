@@ -171,6 +171,13 @@ func (o *ConversionOptions) BuildGlobalArgs() []string {
 		args = append(args, o.CustomGlobalArgs...)
 	}
 
+	if o.CompressionLevel >= 0 {
+		args = append(args, "-C", fmt.Sprintf("%d", o.CompressionLevel))
+	}
+
+	if o.Quality >= 0 {
+		args = append(args, "-q", fmt.Sprintf("%d", o.Quality))
+	}
 	return args
 }
 
@@ -180,21 +187,4 @@ func (o *ConversionOptions) buildEffectArgs() []string {
 		return nil
 	}
 	return o.Effects
-}
-
-// buildFormatArgs adds format-specific compression/quality arguments
-func (o *ConversionOptions) buildFormatArgs(format *AudioFormat) []string {
-	var args []string
-
-	// Compression level for FLAC
-	if format.Type == "flac" && o.CompressionLevel >= 0 {
-		args = append(args, "-C", fmt.Sprintf("%d", o.CompressionLevel))
-	}
-
-	// Quality for MP3/OGG
-	if (format.Type == "mp3" || format.Type == "ogg") && o.Quality >= 0 {
-		args = append(args, "-q", fmt.Sprintf("%d", o.Quality))
-	}
-
-	return args
 }

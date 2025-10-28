@@ -53,6 +53,8 @@ type AudioFormat struct {
 	CommentFile    string  // --comment-file FILENAME - File containing comment text
 	NoGlob         bool    // --no-glob - Don't glob wildcard match
 
+	Pipe bool // -|--pipe - Pipe input to output (default: false)
+
 	// CustomArgs allows passing any additional SoX arguments not covered above
 	// This provides full flexibility to use any SoX parameter
 	// Example: []string{"--replay-gain", "track", "--norm"}
@@ -71,33 +73,6 @@ var (
 		BitDepth:   16,
 	}
 
-	// PCM_RAW_16K_MONO - PCM Raw 16kHz mono 16-bit (common for speech recognition)
-	PCM_RAW_16K_MONO = AudioFormat{
-		Type:       "raw",
-		Encoding:   "signed-integer",
-		SampleRate: 16000,
-		Channels:   1,
-		BitDepth:   16,
-	}
-
-	// PCM_RAW_48K_MONO - PCM Raw 48kHz mono 16-bit (high quality)
-	PCM_RAW_48K_MONO = AudioFormat{
-		Type:       "raw",
-		Encoding:   "signed-integer",
-		SampleRate: 48000,
-		Channels:   1,
-		BitDepth:   16,
-	}
-
-	// FLAC_16K_MONO - FLAC 16kHz mono (optimized for speech transcription)
-	FLAC_16K_MONO = AudioFormat{
-		Type:       "flac",
-		Encoding:   "signed-integer",
-		SampleRate: 16000,
-		Channels:   1,
-		BitDepth:   16,
-	}
-
 	FLAC_16K_MONO_LE = AudioFormat{
 		Type:       "flac",
 		Encoding:   "unsigned",
@@ -105,24 +80,6 @@ var (
 		SampleRate: 16000,
 		Channels:   1,
 		BitDepth:   16,
-	}
-
-	// FLAC_44K_STEREO - FLAC 44.1kHz stereo (CD quality)
-	FLAC_44K_STEREO = AudioFormat{
-		Type:       "flac",
-		Encoding:   "signed-integer",
-		SampleRate: 44100,
-		Channels:   2,
-		BitDepth:   16,
-	}
-
-	// WAV_8K_MONO - WAV 8kHz mono 8-bit
-	WAV_8K_MONO = AudioFormat{
-		Type:       "wav",
-		Encoding:   "signed-integer",
-		SampleRate: 8000,
-		Channels:   1,
-		BitDepth:   8,
 	}
 
 	WAV_8K_MONO_LE = AudioFormat{
@@ -164,16 +121,16 @@ var (
 // BuildArgs converts AudioFormat to SoX command-line arguments
 // Supports all SoX format options without discriminating file types
 // isInput: true for input format, false for output format
-func (f *AudioFormat) BuildArgs(isInput bool) []string {
+func (f *AudioFormat) BuildArgs() []string {
 	var args []string
 
 	// Volume adjustment (input only)
-	if isInput && f.Volume != 0 {
+	if f.Volume != 0 {
 		args = append(args, "-v", fmt.Sprintf("%f", f.Volume))
 	}
 
 	// Ignore length (input only)
-	if isInput && f.IgnoreLength {
+	if f.IgnoreLength {
 		args = append(args, "--ignore-length")
 	}
 
@@ -218,22 +175,22 @@ func (f *AudioFormat) BuildArgs(isInput bool) []string {
 	}
 
 	// Compression (output only)
-	if !isInput && f.Compression != 0 {
+	if f.Compression != 0 {
 		args = append(args, "-C", fmt.Sprintf("%f", f.Compression))
 	}
 
 	// Comment (output only)
-	if !isInput && f.Comment != "" {
+	if f.Comment != "" {
 		args = append(args, "--comment", f.Comment)
 	}
 
 	// Add comment (output only)
-	if !isInput && f.AddComment != "" {
+	if f.AddComment != "" {
 		args = append(args, "--add-comment", f.AddComment)
 	}
 
 	// Comment file (output only)
-	if !isInput && f.CommentFile != "" {
+	if f.CommentFile != "" {
 		args = append(args, "--comment-file", f.CommentFile)
 	}
 
@@ -247,23 +204,17 @@ func (f *AudioFormat) BuildArgs(isInput bool) []string {
 		args = append(args, f.CustomArgs...)
 	}
 
+	// Pipe
+	if f.Pipe {
+		args = append(args, "-")
+	}
+
 	return args
 }
 
 // Validate checks if the AudioFormat has valid parameters
 // More flexible validation that allows users to configure their own parameters
 func (f *AudioFormat) Validate() error {
-	// Type is optional now - users might specify it via CustomArgs
-	// or rely on SoX auto-detection
-
-	// For raw format, we still recommend specifying encoding details
-	// but don't enforce it strictly to allow CustomArgs flexibility
-	if f.Type == "raw" {
-		if f.Encoding == "" && len(f.CustomArgs) == 0 {
-			return fmt.Errorf("encoding is recommended for raw format (or use CustomArgs)")
-		}
-	}
-
 	// Validate endian values if specified
 	if f.Endian != "" {
 		if f.Endian != "little" && f.Endian != "big" && f.Endian != "swap" {

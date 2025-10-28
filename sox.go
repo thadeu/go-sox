@@ -379,16 +379,13 @@ func (c *Converter) buildCommandArgs() []string {
 	args = append(args, c.Options.BuildGlobalArgs()...)
 
 	// Input format arguments
-	args = append(args, c.Input.BuildArgs(true)...)
+	args = append(args, c.Input.BuildArgs()...)
 
 	// Input file (stdin)
 	args = append(args, "-")
 
 	// Output format arguments
-	args = append(args, c.Output.BuildArgs(false)...)
-
-	// Format-specific arguments for output
-	args = append(args, c.Options.buildFormatArgs(&c.Output)...)
+	args = append(args, c.Output.BuildArgs()...)
 
 	// Output file (stdout)
 	args = append(args, "-")

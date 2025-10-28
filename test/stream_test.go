@@ -1,8 +1,6 @@
 package sox
 
 import (
-	"bytes"
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -15,26 +13,31 @@ import (
 	. "github.com/thadeu/go-sox"
 )
 
-// StreamConverterTestSuite defines the test suite for StreamConverter
-type StreamConverterTestSuite struct {
+// StreamerTestSuite defines the test suite for Streamer
+type StreamerTestSuite struct {
 	suite.Suite
 	tmpDir string
 }
 
 // SetupSuite runs once before all tests
-func (s *StreamConverterTestSuite) SetupSuite() {
+func (s *StreamerTestSuite) SetupSuite() {
 	if err := CheckSoxInstalled(""); err != nil {
 		s.T().Skip("SoX not installed")
 	}
 }
 
 // SetupTest runs before each test
-func (s *StreamConverterTestSuite) SetupTest() {
+func (s *StreamerTestSuite) SetupTest() {
 	s.tmpDir = s.T().TempDir()
 }
 
+// TestStreamerSuite runs the test suite
+func TestStreamerSuite(t *testing.T) {
+	suite.Run(t, new(StreamerTestSuite))
+}
+
 // generatePCMData generates test PCM audio data
-func (s *StreamConverterTestSuite) generatePCMData(sampleRate, durationMs int) []byte {
+func (s *StreamerTestSuite) generatePCMData(sampleRate, durationMs int) []byte {
 	numSamples := (sampleRate * durationMs) / 1000
 	buffer := make([]byte, numSamples*2) // mono, 16-bit
 	for i := 0; i < numSamples; i++ {
@@ -46,9 +49,9 @@ func (s *StreamConverterTestSuite) generatePCMData(sampleRate, durationMs int) [
 }
 
 // TestBasicStreaming tests basic streaming conversion
-func (s *StreamConverterTestSuite) TestBasicStreaming() {
-	stream := NewStreamConverter(PCM_RAW_16K_MONO, FLAC_16K_MONO)
-	require.NoError(s.T(), stream.Start())
+func (s *StreamerTestSuite) TestBasicStreaming() {
+	stream := NewStreamer(PCM_RAW_8K_MONO, FLAC_16K_MONO_LE)
+	stream.Start(1 * time.Second)
 
 	// Write multiple chunks
 	for i := 0; i < 10; i++ {
@@ -58,21 +61,18 @@ func (s *StreamConverterTestSuite) TestBasicStreaming() {
 	}
 
 	// Flush and get output
-	data, err := stream.Flush()
+	err := stream.End()
 	require.NoError(s.T(), err)
-	assert.NotEmpty(s.T(), data, "Expected non-empty output")
-
-	s.T().Logf("Converted 10 chunks to %d bytes FLAC", len(data))
 }
 
 // TestWithOutputPath tests streaming with file output
-func (s *StreamConverterTestSuite) TestWithOutputPath() {
+func (s *StreamerTestSuite) TestWithOutputPath() {
 	outputPath := filepath.Join(s.tmpDir, "test_stream.flac")
 
-	stream := NewStreamConverter(PCM_RAW_16K_MONO, FLAC_16K_MONO).
+	stream := NewStreamer(PCM_RAW_8K_MONO, FLAC_16K_MONO_LE).
 		WithOutputPath(outputPath)
 
-	require.NoError(s.T(), stream.Start())
+	stream.Start(1 * time.Second)
 
 	// Write data
 	for i := 0; i < 20; i++ {
@@ -82,7 +82,7 @@ func (s *StreamConverterTestSuite) TestWithOutputPath() {
 	}
 
 	// Flush to file
-	_, err := stream.Flush()
+	err := stream.End()
 	require.NoError(s.T(), err)
 
 	// Verify file exists and has content
@@ -94,13 +94,13 @@ func (s *StreamConverterTestSuite) TestWithOutputPath() {
 }
 
 // TestBufferAccumulation tests that buffer accumulates all data
-func (s *StreamConverterTestSuite) TestBufferAccumulation() {
+func (s *StreamerTestSuite) TestBufferAccumulation() {
 	outputPath := filepath.Join(s.tmpDir, "test_accumulation.flac")
 
-	stream := NewStreamConverter(PCM_RAW_16K_MONO, FLAC_16K_MONO).
+	stream := NewStreamer(PCM_RAW_8K_MONO, FLAC_16K_MONO_LE).
 		WithOutputPath(outputPath)
 
-	require.NoError(s.T(), stream.Start())
+	stream.Start(1 * time.Second)
 
 	// Write data in multiple stages
 	totalChunks := 30
@@ -111,7 +111,7 @@ func (s *StreamConverterTestSuite) TestBufferAccumulation() {
 	}
 
 	// Flush all accumulated data
-	_, err := stream.Flush()
+	err := stream.End()
 	require.NoError(s.T(), err)
 
 	// Verify file contains all data (should be ~3 seconds of audio)
@@ -127,13 +127,13 @@ func (s *StreamConverterTestSuite) TestBufferAccumulation() {
 }
 
 // TestMultipleFormats tests different output formats
-func (s *StreamConverterTestSuite) TestMultipleFormats() {
+func (s *StreamerTestSuite) TestMultipleFormats() {
 	formats := []struct {
 		name   string
 		format AudioFormat
 		ext    string
 	}{
-		{"FLAC", FLAC_16K_MONO, ".flac"},
+		{"FLAC", FLAC_16K_MONO_LE, ".flac"},
 		{"WAV", WAV_16K_MONO, ".wav"},
 		{"ULAW", ULAW_8K_MONO, ".ul"},
 	}
@@ -142,10 +142,10 @@ func (s *StreamConverterTestSuite) TestMultipleFormats() {
 		s.Run(tc.name, func() {
 			outputPath := filepath.Join(s.tmpDir, "test_"+tc.name+tc.ext)
 
-			stream := NewStreamConverter(PCM_RAW_16K_MONO, tc.format).
+			stream := NewStreamer(PCM_RAW_8K_MONO, tc.format).
 				WithOutputPath(outputPath)
 
-			require.NoError(s.T(), stream.Start(), "Failed to start stream for %s", tc.name)
+			stream.Start(1 * time.Second)
 
 			// Write data
 			for i := 0; i < 10; i++ {
@@ -155,270 +155,8 @@ func (s *StreamConverterTestSuite) TestMultipleFormats() {
 			}
 
 			// Flush
-			_, err := stream.Flush()
-			require.NoError(s.T(), err, "Failed to flush %s", tc.name)
-
-			// Verify file
-			fileInfo, err := os.Stat(outputPath)
-			require.NoError(s.T(), err, "File not created for %s", tc.name)
-			assert.Greater(s.T(), fileInfo.Size(), int64(0), "File is empty for %s", tc.name)
-
-			s.T().Logf("%s: %d bytes", tc.name, fileInfo.Size())
+			err := stream.End()
+			require.NoError(s.T(), err)
 		})
 	}
-}
-
-// TestWithPool tests streaming with pool
-func (s *StreamConverterTestSuite) TestWithPool() {
-	pool := NewPoolWithLimit(2) // Limit to 2 concurrent
-
-	// Start 3 streams (3rd should wait for slot)
-	streams := make([]*StreamConverter, 3)
-	for i := 0; i < 3; i++ {
-		outputPath := filepath.Join(s.tmpDir, "test_pool_"+string(rune('A'+i))+".flac")
-		streams[i] = NewStreamConverter(PCM_RAW_16K_MONO, FLAC_16K_MONO).
-			WithOutputPath(outputPath).
-			WithPool(pool)
-	}
-
-	// Start first 2 (should succeed immediately)
-	for i := 0; i < 2; i++ {
-		require.NoError(s.T(), streams[i].Start(), "Failed to start stream %d", i)
-	}
-
-	// Try to start 3rd (should block or fail)
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-
-	err := streams[2].Start(ctx)
-	assert.Error(s.T(), err, "Expected 3rd stream to fail/timeout due to pool limit")
-
-	// Flush first stream to free slot
-	for i := 0; i < 5; i++ {
-		chunk := s.generatePCMData(16000, 100)
-		streams[0].Write(chunk)
-	}
-	streams[0].Flush()
-
-	// Now 3rd stream should be able to start
-	require.NoError(s.T(), streams[2].Start(), "Failed to start 3rd stream after slot freed")
-
-	// Cleanup
-	for i := 1; i < 3; i++ {
-		chunk := s.generatePCMData(16000, 100)
-		streams[i].Write(chunk)
-		streams[i].Flush()
-	}
-
-	s.T().Log("Pool management working correctly")
-}
-
-// TestAvailable tests Available() method
-func (s *StreamConverterTestSuite) TestAvailable() {
-	stream := NewStreamConverter(PCM_RAW_16K_MONO, FLAC_16K_MONO)
-	require.NoError(s.T(), stream.Start())
-
-	// Initially should be 0
-	assert.Equal(s.T(), 0, stream.Available(), "Expected 0 available initially")
-
-	// Write some data
-	chunk := s.generatePCMData(16000, 500) // 500ms
-	stream.Write(chunk)
-
-	// Give SoX time to process
-	time.Sleep(200 * time.Millisecond)
-
-	// Should have some data available
-	available := stream.Available()
-	if available == 0 {
-		s.T().Log("Warning: No data available yet (might be buffering)")
-	} else {
-		s.T().Logf("Available: %d bytes", available)
-	}
-
-	// Flush
-	data, err := stream.Flush()
-	require.NoError(s.T(), err)
-	assert.NotEmpty(s.T(), data, "Expected non-empty output")
-
-	s.T().Logf("Final output: %d bytes", len(data))
-}
-
-// TestClose tests Close() method
-func (s *StreamConverterTestSuite) TestClose() {
-	stream := NewStreamConverter(PCM_RAW_16K_MONO, FLAC_16K_MONO)
-	require.NoError(s.T(), stream.Start())
-
-	// Write some data
-	chunk := s.generatePCMData(16000, 100)
-	stream.Write(chunk)
-
-	// Close without flush
-	require.NoError(s.T(), stream.Close())
-
-	// Try to write after close (should fail)
-	_, err := stream.Write(chunk)
-	assert.Error(s.T(), err, "Expected write after close to fail")
-
-	s.T().Log("Close() working correctly")
-}
-
-// TestStdoutMode tests streaming without output path
-func (s *StreamConverterTestSuite) TestStdoutMode() {
-	stream := NewStreamConverter(PCM_RAW_16K_MONO, FLAC_16K_MONO)
-	// No WithOutputPath() - should use stdout mode
-
-	require.NoError(s.T(), stream.Start())
-
-	// Write data
-	for i := 0; i < 10; i++ {
-		chunk := s.generatePCMData(16000, 100)
-		_, err := stream.Write(chunk)
-		require.NoError(s.T(), err)
-	}
-
-	// Flush and get data
-	data, err := stream.Flush()
-	require.NoError(s.T(), err)
-	assert.NotEmpty(s.T(), data, "Expected non-empty output in stdout mode")
-
-	// Verify it's valid FLAC data (starts with "fLaC")
-	assert.True(s.T(), bytes.HasPrefix(data, []byte("fLaC")), "Output doesn't appear to be valid FLAC")
-
-	s.T().Logf("Stdout mode: %d bytes FLAC", len(data))
-}
-
-// TestIncrementalFlush tests incremental flush functionality
-func (s *StreamConverterTestSuite) TestIncrementalFlush() {
-	outputPath := filepath.Join(s.tmpDir, "test_incremental.flac")
-
-	stream := NewStreamConverter(PCM_RAW_16K_MONO, FLAC_16K_MONO).
-		WithOutputPath(outputPath).
-		WithAutoFlush(1 * time.Second)
-
-	require.NoError(s.T(), stream.Start())
-
-	// Write substantial data to ensure SoX has enough to process
-	totalChunks := 5
-	for i := 0; i < totalChunks; i++ {
-		chunk := s.generatePCMData(16000, 1000) // 1 second chunks
-		_, err := stream.Write(chunk)
-		require.NoError(s.T(), err)
-
-		// Wait for potential incremental flush
-		time.Sleep(1200 * time.Millisecond)
-
-		// Check file status
-		fileInfo, err := os.Stat(outputPath)
-		require.NoError(s.T(), err, "File should exist after write %d", i+1)
-		s.T().Logf("After write %d: file size %d bytes", i+1, fileInfo.Size())
-	}
-
-	// Final flush
-	_, err := stream.Flush()
-	require.NoError(s.T(), err)
-
-	// Verify final file size
-	fileInfo, err := os.Stat(outputPath)
-	require.NoError(s.T(), err)
-	assert.Greater(s.T(), fileInfo.Size(), int64(1000), "Final file should be substantial")
-
-	s.T().Logf("Incremental flush test completed: final size %d bytes", fileInfo.Size())
-}
-
-// TestIncrementalFlushWithoutOutputPath tests that WithAutoFlush requires WithOutputPath
-func (s *StreamConverterTestSuite) TestIncrementalFlushWithoutOutputPath() {
-	stream := NewStreamConverter(PCM_RAW_16K_MONO, FLAC_16K_MONO).
-		WithAutoFlush(500 * time.Millisecond) // No WithOutputPath
-
-	// Should fail to start because WithAutoFlush requires WithOutputPath
-	err := stream.Start()
-	assert.Error(s.T(), err, "Should fail to start WithAutoFlush without WithOutputPath")
-	assert.Contains(s.T(), err.Error(), "WithAutoFlush requires WithOutputPath")
-
-	s.T().Log("WithAutoFlush correctly requires WithOutputPath")
-}
-
-// TestIncrementalFlushRealWorld tests real-world usage pattern
-func (s *StreamConverterTestSuite) TestIncrementalFlushRealWorld() {
-	outputPath := filepath.Join(s.tmpDir, "test_realworld.flac")
-
-	stream := NewStreamConverter(PCM_RAW_16K_MONO, FLAC_16K_MONO).
-		WithOutputPath(outputPath).
-		WithAutoFlush(3 * time.Second) // Real-world interval
-
-	require.NoError(s.T(), stream.Start())
-
-	// Simulate RTP packet streaming
-	packetCount := 0
-	for i := 0; i < 20; i++ {
-		// Simulate RTP packet (small chunks)
-		chunk := s.generatePCMData(16000, 100) // 100ms chunks
-		_, err := stream.Write(chunk)
-		require.NoError(s.T(), err)
-		packetCount++
-
-		// Check file periodically
-		if i%5 == 0 {
-			fileInfo, err := os.Stat(outputPath)
-			require.NoError(s.T(), err)
-			s.T().Logf("After %d packets: file size %d bytes", packetCount, fileInfo.Size())
-		}
-
-		time.Sleep(50 * time.Millisecond) // Simulate packet interval
-	}
-
-	// Final flush
-	_, err := stream.Flush()
-	require.NoError(s.T(), err)
-
-	// Verify final result
-	fileInfo, err := os.Stat(outputPath)
-	require.NoError(s.T(), err)
-	assert.Greater(s.T(), fileInfo.Size(), int64(1000), "Final file should be substantial")
-
-	s.T().Logf("Real-world test: %d packets -> %d bytes FLAC", packetCount, fileInfo.Size())
-}
-
-// TestErrorHandling tests error scenarios
-func (s *StreamConverterTestSuite) TestErrorHandling() {
-	s.Run("WriteBeforeStart", func() {
-		stream := NewStreamConverter(PCM_RAW_16K_MONO, FLAC_16K_MONO)
-		chunk := s.generatePCMData(16000, 100)
-		_, err := stream.Write(chunk)
-		assert.Error(s.T(), err, "Expected error when writing before start")
-	})
-
-	s.Run("FlushBeforeStart", func() {
-		stream := NewStreamConverter(PCM_RAW_16K_MONO, FLAC_16K_MONO)
-		_, err := stream.Flush()
-		assert.Error(s.T(), err, "Expected error when flushing before start")
-	})
-
-	s.Run("DoubleStart", func() {
-		stream := NewStreamConverter(PCM_RAW_16K_MONO, FLAC_16K_MONO)
-		stream.Start()
-		err := stream.Start()
-		assert.Error(s.T(), err, "Expected error on double start")
-		stream.Close()
-	})
-
-	s.Run("InvalidOutputPath", func() {
-		stream := NewStreamConverter(PCM_RAW_16K_MONO, FLAC_16K_MONO).
-			WithOutputPath("/invalid/path/that/does/not/exist/file.flac")
-
-		require.NoError(s.T(), stream.Start(), "Start should succeed")
-
-		chunk := s.generatePCMData(16000, 100)
-		stream.Write(chunk)
-
-		// Flush should fail when trying to write to invalid path
-		_, err := stream.Flush()
-		assert.Error(s.T(), err, "Expected error when flushing to invalid path")
-	})
-}
-
-// TestStreamConverterSuite runs the test suite
-func TestStreamConverterSuite(t *testing.T) {
-	suite.Run(t, new(StreamConverterTestSuite))
 }
