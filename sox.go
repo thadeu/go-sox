@@ -12,10 +12,13 @@
 package sox
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"sync"
 	"time"
 )
 
@@ -27,18 +30,45 @@ type Converter struct {
 	circuitBreaker *CircuitBreaker
 	retryConfig    RetryConfig
 	pool           *Pool
+
+	// Streaming state
+	streamMode     bool
+	streamBuffer   *bytes.Buffer
+	streamLock     sync.Mutex
+	streamStarted  bool
+	streamClosed   bool
+	streamCmd      *exec.Cmd
+	streamStdin    io.WriteCloser
+	streamStdout   io.ReadCloser
+
+	// Ticker state
+	tickerMode     bool
+	tickerDuration time.Duration
+	ticker         *time.Ticker
+	tickerStop     chan struct{}
+	tickerBuffer   *bytes.Buffer
+	tickerLock     sync.Mutex
 }
 
-// NewConverter creates a new Converter with resilient defaults (circuit breaker, retry, pool)
-func NewConverter(input, output AudioFormat) *Converter {
+// New creates a new Converter with input and output formats
+func New(input, output AudioFormat) *Converter {
 	return &Converter{
 		Input:          input,
 		Output:         output,
 		Options:        DefaultOptions(),
 		circuitBreaker: NewCircuitBreaker(),
 		retryConfig:    DefaultRetryConfig(),
-		pool:           nil, // No pool by default, can be added with WithPool()
+		pool:           nil,
+		streamBuffer:   &bytes.Buffer{},
+		tickerBuffer:   &bytes.Buffer{},
+		tickerStop:     make(chan struct{}),
 	}
+}
+
+// NewConverter creates a new Converter with input and output formats
+// This is a backward compatibility wrapper around New()
+func NewConverter(input, output AudioFormat) *Converter {
+	return New(input, output)
 }
 
 // WithOptions sets custom conversion options
@@ -77,37 +107,83 @@ func (c *Converter) DisableResilience() *Converter {
 	return c
 }
 
-// Convert performs a one-shot conversion from input reader to output writer
-// This uses pipes to stream data through SoX without temporary files
-// Includes automatic retry and circuit breaker protection
-func (c *Converter) Convert(input io.Reader, output io.Writer) error {
+// WithStream enables streaming mode for real-time data processing
+// In streaming mode, use Write() to send data and Read() to receive data
+func (c *Converter) WithStream() *Converter {
+	c.streamMode = true
+	return c
+}
+
+// WithTicker enables periodic conversion with specified interval
+// Each interval, the buffered data will be converted and output
+func (c *Converter) WithTicker(interval time.Duration) *Converter {
+	c.tickerMode = true
+	c.tickerDuration = interval
+	return c
+}
+
+// Convert performs conversion with flexible argument handling
+// Arguments can be:
+// - Convert(io.Reader, io.Writer) for streaming I/O
+// - Convert(string, string) for file paths
+// - Mixes of Reader/Writer and string paths are supported
+func (c *Converter) Convert(args ...interface{}) error {
 	ctx := context.Background()
 	if c.Options.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, c.Options.Timeout)
 		defer cancel()
 	}
-	return c.ConvertWithContext(ctx, input, output)
+	return c.ConvertWithContext(ctx, args...)
 }
 
-// ConvertWithContext performs conversion with context for cancellation and timeout
-// Includes automatic retry and circuit breaker protection
-func (c *Converter) ConvertWithContext(ctx context.Context, input io.Reader, output io.Writer) error {
-	// Acquire pool slot if pool is configured
-	if c.pool != nil {
-		if err := c.pool.Acquire(ctx); err != nil {
-			return fmt.Errorf("failed to acquire worker slot: %w", err)
+// ConvertWithContext performs conversion with context and flexible arguments
+func (c *Converter) ConvertWithContext(ctx context.Context, args ...interface{}) error {
+	if len(args) < 2 {
+		return fmt.Errorf("convert requires at least 2 arguments (input and output)")
+	}
+
+	input := args[0]
+	output := args[1]
+
+	// Detect input type
+	var inputReader io.Reader
+	switch v := input.(type) {
+	case io.Reader:
+		inputReader = v
+	case string:
+		file, err := os.Open(v)
+		if err != nil {
+			return fmt.Errorf("failed to open input file: %w", err)
 		}
-		defer c.pool.Release()
+		defer file.Close()
+		inputReader = file
+	default:
+		return fmt.Errorf("input must be io.Reader or string (file path), got %T", input)
+	}
+
+	// Detect output type
+	var outputWriter io.Writer
+	switch v := output.(type) {
+	case io.Writer:
+		outputWriter = v
+	case string:
+		file, err := os.Create(v)
+		if err != nil {
+			return fmt.Errorf("failed to create output file: %w", err)
+		}
+		defer file.Close()
+		outputWriter = file
+	default:
+		return fmt.Errorf("output must be io.Writer or string (file path), got %T", output)
 	}
 
 	// Convert input to ReadSeeker for retry support
 	var seekableInput io.ReadSeeker
-	if seeker, ok := input.(io.ReadSeeker); ok {
+	if seeker, ok := inputReader.(io.ReadSeeker); ok {
 		seekableInput = seeker
 	} else {
-		// If not seekable, read all into memory (required for retry)
-		data, err := io.ReadAll(input)
+		data, err := io.ReadAll(inputReader)
 		if err != nil {
 			return fmt.Errorf("failed to read input: %w", err)
 		}
@@ -115,7 +191,215 @@ func (c *Converter) ConvertWithContext(ctx context.Context, input io.Reader, out
 	}
 
 	// Execute with retry and circuit breaker
-	return c.executeWithRetry(ctx, seekableInput, output)
+	return c.executeWithRetry(ctx, seekableInput, outputWriter)
+}
+
+// Write writes audio data to the converter
+// Only valid when using WithStream() mode
+func (c *Converter) Write(data []byte) (int, error) {
+	if c.tickerMode {
+		c.tickerLock.Lock()
+		defer c.tickerLock.Unlock()
+		return c.tickerBuffer.Write(data)
+	}
+
+	if !c.streamMode {
+		return 0, fmt.Errorf("write only available in stream or ticker mode")
+	}
+
+	if !c.streamStarted {
+		return 0, fmt.Errorf("stream not started, call Start() first")
+	}
+
+	if c.streamClosed {
+		return 0, fmt.Errorf("stream is closed")
+	}
+
+	if c.streamStdin == nil {
+		return 0, fmt.Errorf("stream stdin not initialized")
+	}
+
+	return c.streamStdin.Write(data)
+}
+
+// Read reads converted audio data from the converter
+// Only valid when using WithStream() mode
+// Creates a copy of the current buffer to avoid data loss
+func (c *Converter) Read(b []byte) (int, error) {
+	if !c.streamMode {
+		return 0, fmt.Errorf("read only available in stream mode")
+	}
+
+	if !c.streamStarted {
+		return 0, fmt.Errorf("stream not started, call Start() first")
+	}
+
+	c.streamLock.Lock()
+	defer c.streamLock.Unlock()
+
+	return c.streamStdout.Read(b)
+}
+
+// Start initializes the streaming converter
+// For streaming mode, starts the sox process
+// For ticker mode, starts the periodic conversion loop
+func (c *Converter) Start() error {
+	if c.tickerMode {
+		return c.startTicker()
+	}
+
+	if !c.streamMode {
+		return fmt.Errorf("start only available in stream or ticker mode")
+	}
+
+	if c.streamStarted {
+		return fmt.Errorf("stream already started")
+	}
+
+	c.streamStarted = true
+	c.streamClosed = false
+
+	// Build command arguments
+	args := c.buildCommandArgs()
+
+	// Create command
+	cmd := exec.Command(c.Options.SoxPath, args...)
+
+	// Set up pipes
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("failed to create stdin pipe: %w", err)
+	}
+	c.streamStdin = stdin
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("failed to create stdout pipe: %w", err)
+	}
+	c.streamStdout = stdout
+
+	// Capture stderr
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start sox: %w", err)
+	}
+
+	c.streamCmd = cmd
+
+	// Track process
+	GetMonitor().TrackProcess(cmd.Process.Pid)
+
+	return nil
+}
+
+// startTicker initializes the ticker-based conversion
+func (c *Converter) startTicker() error {
+	if c.tickerDuration <= 0 {
+		return fmt.Errorf("ticker duration must be positive")
+	}
+
+	c.ticker = time.NewTicker(c.tickerDuration)
+
+	go func() {
+		for {
+			select {
+			case <-c.ticker.C:
+				c.tickerLock.Lock()
+				if c.tickerBuffer.Len() > 0 {
+					_ = c.flushTickerBuffer()
+				}
+				c.tickerLock.Unlock()
+			case <-c.tickerStop:
+				return
+			}
+		}
+	}()
+
+	return nil
+}
+
+// flushTickerBuffer converts buffered data (assumes lock is held)
+func (c *Converter) flushTickerBuffer() error {
+	if c.tickerBuffer.Len() == 0 {
+		return nil
+	}
+
+	// Create a copy of buffer data
+	inputData := make([]byte, c.tickerBuffer.Len())
+	copy(inputData, c.tickerBuffer.Bytes())
+
+	// Reset buffer after copying
+	c.tickerBuffer.Reset()
+
+	// Run conversion on copied data
+	ctx := context.Background()
+	if c.Options.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.Options.Timeout)
+		defer cancel()
+	}
+
+	inputReader := newBytesReader(inputData)
+	outputBuffer := &bytes.Buffer{}
+
+	return c.convertInternal(ctx, inputReader, outputBuffer)
+}
+
+// Stop stops the converter and closes resources
+// For streaming mode, closes the stdin pipe
+// For ticker mode, stops the ticker and flushes remaining data
+func (c *Converter) Stop() error {
+	if c.tickerMode {
+		return c.stopTicker()
+	}
+
+	if !c.streamMode {
+		return nil
+	}
+
+	if !c.streamStarted || c.streamClosed {
+		return nil
+	}
+
+	c.streamClosed = true
+
+	// Close stdin to signal EOF
+	if c.streamStdin != nil {
+		if err := c.streamStdin.Close(); err != nil {
+			return fmt.Errorf("failed to close stdin: %w", err)
+		}
+	}
+
+	// Wait for process to complete
+	if c.streamCmd != nil {
+		if err := c.streamCmd.Wait(); err != nil {
+			return fmt.Errorf("sox process failed: %w", err)
+		}
+		GetMonitor().UntrackProcess(c.streamCmd.Process.Pid)
+	}
+
+	return nil
+}
+
+// stopTicker stops the ticker and flushes remaining data
+func (c *Converter) stopTicker() error {
+	if c.ticker != nil {
+		c.ticker.Stop()
+		close(c.tickerStop)
+	}
+
+	// Final flush
+	c.tickerLock.Lock()
+	defer c.tickerLock.Unlock()
+
+	return c.flushTickerBuffer()
+}
+
+// Close is an alias for Stop for compatibility
+func (c *Converter) Close() error {
+	return c.Stop()
 }
 
 func (c *Converter) executeWithRetry(ctx context.Context, input io.ReadSeeker, output io.Writer) error {
@@ -123,14 +407,12 @@ func (c *Converter) executeWithRetry(ctx context.Context, input io.ReadSeeker, o
 	var lastErr error
 
 	for attempt := 0; attempt < c.retryConfig.MaxAttempts; attempt++ {
-		// Check context cancellation
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("conversion cancelled: %w", ctx.Err())
 		default:
 		}
 
-		// Execute with circuit breaker if enabled
 		var err error
 		if c.circuitBreaker != nil {
 			err = c.circuitBreaker.Call(func() error {
@@ -146,35 +428,29 @@ func (c *Converter) executeWithRetry(ctx context.Context, input io.ReadSeeker, o
 
 		lastErr = err
 
-		// Don't retry on circuit breaker open
 		if c.circuitBreaker != nil && err == ErrCircuitOpen {
 			return err
 		}
 
-		// Don't retry on validation errors
 		if err == ErrInvalidFormat {
 			return err
 		}
 
-		// Last attempt, don't wait
 		if attempt == c.retryConfig.MaxAttempts-1 {
 			break
 		}
 
-		// Wait with exponential backoff
 		select {
 		case <-time.After(backoff):
 		case <-ctx.Done():
 			return fmt.Errorf("conversion cancelled during backoff: %w", ctx.Err())
 		}
 
-		// Increase backoff
 		backoff = time.Duration(float64(backoff) * c.retryConfig.BackoffMultiple)
 		if backoff > c.retryConfig.MaxBackoff {
 			backoff = c.retryConfig.MaxBackoff
 		}
 
-		// Reset input position for retry
 		if _, err := input.Seek(0, io.SeekStart); err != nil {
 			return fmt.Errorf("failed to seek input for retry: %w", err)
 		}
@@ -185,7 +461,6 @@ func (c *Converter) executeWithRetry(ctx context.Context, input io.ReadSeeker, o
 
 // convertInternal performs the actual SoX conversion without retry logic
 func (c *Converter) convertInternal(ctx context.Context, input io.Reader, output io.Writer) error {
-	// Validate formats
 	if err := c.Input.Validate(); err != nil {
 		return ErrInvalidFormat
 	}
@@ -193,39 +468,38 @@ func (c *Converter) convertInternal(ctx context.Context, input io.Reader, output
 		return ErrInvalidFormat
 	}
 
-	// Build SoX command arguments
-	args := c.buildCommandArgs()
+	// Acquire pool slot if configured
+	if c.pool != nil {
+		if err := c.pool.Acquire(ctx); err != nil {
+			return fmt.Errorf("failed to acquire worker slot: %w", err)
+		}
+		defer c.pool.Release()
+	}
 
-	// Create command with context
+	args := c.buildCommandArgs()
 	cmd := exec.CommandContext(ctx, c.Options.SoxPath, args...)
 
-	// Set up pipes
 	cmd.Stdin = input
 	cmd.Stdout = output
 
-	// Capture stderr for debugging
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		return fmt.Errorf("failed to create stderr pipe: %w", err)
 	}
 
-	// Start the command
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start sox: %w", err)
 	}
 
-	// Track process
 	GetMonitor().TrackProcess(cmd.Process.Pid)
 	defer GetMonitor().UntrackProcess(cmd.Process.Pid)
 
-	// Read stderr in background (to prevent blocking)
 	stderrData := make(chan []byte, 1)
 	go func() {
 		data, _ := io.ReadAll(stderr)
 		stderrData <- data
 	}()
 
-	// Wait for command to complete
 	if err := cmd.Wait(); err != nil {
 		errMsg := <-stderrData
 		if ctx.Err() != nil {
@@ -237,160 +511,16 @@ func (c *Converter) convertInternal(ctx context.Context, input io.Reader, output
 	return nil
 }
 
-// ConvertFile converts audio from an input file to an output file
-// This is a convenience method for file-based conversions
-// Includes automatic retry and circuit breaker protection
-func (c *Converter) ConvertFile(inputPath, outputPath string) error {
-	ctx := context.Background()
-	if c.Options.Timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, c.Options.Timeout)
-		defer cancel()
-	}
-	return c.ConvertFileWithContext(ctx, inputPath, outputPath)
-}
-
-// ConvertFileWithContext converts audio files with context for cancellation and timeout
-func (c *Converter) ConvertFileWithContext(ctx context.Context, inputPath, outputPath string) error {
-	// Acquire pool slot if pool is configured
-	if c.pool != nil {
-		if err := c.pool.Acquire(ctx); err != nil {
-			return fmt.Errorf("failed to acquire worker slot: %w", err)
-		}
-		defer c.pool.Release()
-	}
-
-	// Execute with retry and circuit breaker
-	return c.executeFileWithRetry(ctx, inputPath, outputPath)
-}
-
-func (c *Converter) executeFileWithRetry(ctx context.Context, inputPath, outputPath string) error {
-	backoff := c.retryConfig.InitialBackoff
-	var lastErr error
-
-	for attempt := 0; attempt < c.retryConfig.MaxAttempts; attempt++ {
-		// Check context cancellation
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("conversion cancelled: %w", ctx.Err())
-		default:
-		}
-
-		// Execute with circuit breaker if enabled
-		var err error
-		if c.circuitBreaker != nil {
-			err = c.circuitBreaker.Call(func() error {
-				return c.convertFileInternal(ctx, inputPath, outputPath)
-			})
-		} else {
-			err = c.convertFileInternal(ctx, inputPath, outputPath)
-		}
-
-		if err == nil {
-			return nil
-		}
-
-		lastErr = err
-
-		// Don't retry on circuit breaker open
-		if c.circuitBreaker != nil && err == ErrCircuitOpen {
-			return err
-		}
-
-		// Don't retry on validation errors
-		if err == ErrInvalidFormat {
-			return err
-		}
-
-		// Last attempt, don't wait
-		if attempt == c.retryConfig.MaxAttempts-1 {
-			break
-		}
-
-		// Wait with exponential backoff
-		select {
-		case <-time.After(backoff):
-		case <-ctx.Done():
-			return fmt.Errorf("conversion cancelled during backoff: %w", ctx.Err())
-		}
-
-		// Increase backoff
-		backoff = time.Duration(float64(backoff) * c.retryConfig.BackoffMultiple)
-		if backoff > c.retryConfig.MaxBackoff {
-			backoff = c.retryConfig.MaxBackoff
-		}
-	}
-
-	return fmt.Errorf("file conversion failed after %d attempts: %w", c.retryConfig.MaxAttempts, lastErr)
-}
-
-func (c *Converter) convertFileInternal(ctx context.Context, inputPath, outputPath string) error {
-	// Validate formats
-	if err := c.Input.Validate(); err != nil {
-		return ErrInvalidFormat
-	}
-	if err := c.Output.Validate(); err != nil {
-		return ErrInvalidFormat
-	}
-
-	// Build SoX command arguments with file paths
-	args := c.buildCommandArgs()
-
-	// Replace stdin/stdout placeholders with actual file paths
-	inputReplaced := false
-	for i, arg := range args {
-		if arg == "-" {
-			if !inputReplaced {
-				args[i] = inputPath
-				inputReplaced = true
-			} else {
-				args[i] = outputPath
-			}
-		}
-	}
-
-	// Create command with context
-	cmd := exec.CommandContext(ctx, c.Options.SoxPath, args...)
-
-	// Track process
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start sox: %w", err)
-	}
-
-	GetMonitor().TrackProcess(cmd.Process.Pid)
-	defer GetMonitor().UntrackProcess(cmd.Process.Pid)
-
-	// Wait for completion
-	if err := cmd.Wait(); err != nil {
-		if ctx.Err() != nil {
-			return fmt.Errorf("sox conversion timeout/cancelled: %w", ctx.Err())
-		}
-		return fmt.Errorf("sox conversion failed: %w", err)
-	}
-
-	return nil
-}
-
 // buildCommandArgs constructs the complete SoX command arguments
 func (c *Converter) buildCommandArgs() []string {
 	args := []string{}
 
-	// Global options
 	args = append(args, c.Options.BuildGlobalArgs()...)
-
-	// Input format arguments
 	args = append(args, c.Input.BuildArgs()...)
-
-	// Input file (stdin)
 	args = append(args, "-")
-
-	// Output format arguments
 	args = append(args, c.Output.BuildArgs()...)
-
-	// Output file (stdout)
 	args = append(args, "-")
 
-	// Effects
 	if effects := c.Options.buildEffectArgs(); len(effects) > 0 {
 		args = append(args, effects...)
 	}
