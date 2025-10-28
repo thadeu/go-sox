@@ -143,14 +143,6 @@ func (s *Streamer) End() error {
 	return s.Stop()
 }
 
-// flush flushes the buffer to output file
-func (s *Streamer) flush() error {
-	s.bufferLock.Lock()
-	defer s.bufferLock.Unlock()
-
-	return s.flushLocked()
-}
-
 // flushLocked flushes the buffer to output file (assumes lock is already held)
 func (s *Streamer) flushLocked() error {
 	if s.buffer.Len() == 0 {
@@ -181,9 +173,6 @@ func (s *Streamer) flushLocked() error {
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("sox conversion failed: %w\nstderr: %s", err, stderr.String())
 	}
-
-	// Reset buffer after successful flush
-	s.buffer.Reset()
 
 	return nil
 }
