@@ -7,8 +7,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
-
-	. "github.com/thadeu/go-sox"
 )
 
 // ConverterTestSuite defines the test suite for Converter

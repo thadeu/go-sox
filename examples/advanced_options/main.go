@@ -115,8 +115,8 @@ func example3_GlobalOptions() {
 	fmt.Println("Example 3: Global Options")
 	fmt.Println("-------------------------")
 
-	input := sox.PCM_RAW_16K_MONO
-	output := sox.FLAC_16K_MONO
+	input := sox.PCM_RAW_8K_MONO
+	output := sox.FLAC_16K_MONO_LE
 
 	// Configure global options
 	options := sox.ConversionOptions{

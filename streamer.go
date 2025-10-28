@@ -11,32 +11,32 @@ import (
 )
 
 type Streamer struct {
-	Input   AudioFormat
-	Output  AudioFormat
-	Options ConversionOptions
-
-	pool       *Pool
+	Input      AudioFormat
+	Output     AudioFormat
+	Options    ConversionOptions
 	outputPath string
 	started    bool
 	closed     bool
-	cmd        *exec.Cmd
-
-	ticker     *time.Ticker
-	tickerStop chan bool
 
 	buffer     *bytes.Buffer
 	bufferLock sync.Mutex
+
+	ticker     *time.Ticker
+	tickerStop chan struct{}
 }
 
 func NewStreamer(input, output AudioFormat) *Streamer {
 	return &Streamer{
-		Input:  input,
-		Output: output,
+		Input:      input,
+		Output:     output,
+		Options:    DefaultOptions(),
+		buffer:     &bytes.Buffer{},
+		tickerStop: make(chan struct{}),
 	}
 }
 
-func (s *Streamer) WithAutoStart(interval time.Duration) *Streamer {
-	s.Start(interval)
+func (s *Streamer) WithOutputPath(path string) *Streamer {
+	s.outputPath = path
 	return s
 }
 
@@ -45,13 +45,7 @@ func (s *Streamer) WithOptions(options ConversionOptions) *Streamer {
 	return s
 }
 
-func (s *Streamer) WithOutputPath(path string) *Streamer {
-	s.outputPath = path
-	return s
-}
-
-// Write writes raw audio data to the SoX process
-// The data will be converted according to the configured formats
+// Write writes raw audio data to the buffer
 func (s *Streamer) Write(data []byte) (int, error) {
 	if !s.started {
 		return 0, fmt.Errorf("stream converter not started")
@@ -67,7 +61,7 @@ func (s *Streamer) Write(data []byte) (int, error) {
 	return s.buffer.Write(data)
 }
 
-// Read reads converted audio data from the buffer
+// Read reads data from the buffer
 func (s *Streamer) Read(b []byte) (int, error) {
 	s.bufferLock.Lock()
 	defer s.bufferLock.Unlock()
@@ -75,57 +69,61 @@ func (s *Streamer) Read(b []byte) (int, error) {
 	return s.buffer.Read(b)
 }
 
-// Simple Logic to create buffer stream to auto-save
-// cmd := exec.Command(
-//
-//	"sox",
-//	"-t", "raw",
-//	"-r", strconv.Itoa(session.OriginalSampleRate),
-//	"-b", strconv.Itoa(session.OriginalSampleRate/1000),
-//	"-c", "1",
-//	"--encoding", GetCodecType(session.OriginalCodec),
-//	"--ignore-length",
-//	"-",
-//	"-t", "flac",
-//	"-r", "16000",
-//	"-b", "16",
-//	"-c", "1",
-//	"-C", "0",
-//	"--add-comment", "PAPI rtp-recorder",
-//	finalPath,
-//
-// )
-//
-// cmd.Stdin = bytes.NewReader(session.Buffer)
-// cmd.Stderr = os.Stderr
-//
-//	if err := cmd.Run(); err != nil {
-//		log.Println("Erro na conversão dos pacotes:", err)
-//		continue
-//	}
+// Start initializes the streamer with optional periodic flushing
+// If interval > 0, starts a ticker that processes buffer at each interval
 func (s *Streamer) Start(interval time.Duration) {
-	s.ticker = time.NewTicker(interval)
+	if s.started {
+		return
+	}
 
+	s.started = true
+	s.closed = false
+
+	if interval > 0 {
+		s.ticker = time.NewTicker(interval)
+		go s.runTicker()
+	}
+}
+
+// runTicker processes the buffer whenever the ticker fires
+func (s *Streamer) runTicker() {
 	for {
 		select {
 		case <-s.ticker.C:
-			args := s.buildCommandArgs()
-			s.cmd = exec.Command(s.Options.SoxPath, args...)
+			s.bufferLock.Lock()
+			if s.buffer.Len() > 0 {
+				// Build command with current buffer content
+				args := s.buildCommandArgs()
+				args = append(args, s.outputPath)
 
-			s.cmd.Stdin = s.buffer
-			s.cmd.Stderr = os.Stderr
+				// Get SoX path
+				soxPath := s.Options.SoxPath
+				if soxPath == "" {
+					soxPath = "sox"
+				}
 
-			if err := s.cmd.Run(); err != nil {
-				log.Println("Error converting packets:", err)
-				continue
+				// Copy buffer data
+				inputData := make([]byte, s.buffer.Len())
+				copy(inputData, s.buffer.Bytes())
+
+				// Run command
+				cmd := exec.Command(soxPath, args...)
+				cmd.Stdin = bytes.NewReader(inputData)
+				cmd.Stderr = os.Stderr
+
+				if err := cmd.Run(); err != nil {
+					log.Printf("Error converting packets: %v", err)
+				}
 			}
+			s.bufferLock.Unlock()
+
 		case <-s.tickerStop:
-			s.ticker.Stop()
 			return
 		}
 	}
 }
 
+// Stop stops the streamer and flushes remaining buffer
 func (s *Streamer) Stop() error {
 	if !s.started {
 		return nil
@@ -135,37 +133,68 @@ func (s *Streamer) Stop() error {
 		return nil
 	}
 
-	s.tickerStop <- true
 	s.closed = true
 	s.started = false
 
-	if s.cmd != nil && s.cmd.Process != nil {
-		// Try to wait for graceful exit first
-		done := make(chan error, 1)
+	// Stop ticker
+	if s.ticker != nil {
+		s.ticker.Stop()
+		close(s.tickerStop)
+	}
 
-		go func() {
-			done <- s.cmd.Wait()
-		}()
+	// Final flush
+	return s.flush()
+}
 
-		select {
-		case <-done:
-			// Process exited gracefully
-		case <-time.After(5 * time.Second):
-			// Timeout - force kill
-			s.cmd.Process.Kill()
+// End is alias for Stop
+func (s *Streamer) End() error {
+	return s.Stop()
+}
 
-			<-done // Wait for Wait() to return after Kill
-		}
+// flush flushes the buffer to output file
+func (s *Streamer) flush() error {
+	s.bufferLock.Lock()
+	defer s.bufferLock.Unlock()
+
+	if s.buffer.Len() == 0 {
+		return nil
+	}
+
+	// Determine output
+	outputPath := s.outputPath
+	if outputPath == "" {
+		outputPath = "-"
+	}
+
+	// Build command
+	args := s.buildCommandArgs()
+	args = append(args, outputPath)
+
+	// Get SoX path
+	soxPath := s.Options.SoxPath
+	if soxPath == "" {
+		soxPath = "sox"
+	}
+
+	// Copy buffer data
+	inputData := make([]byte, s.buffer.Len())
+	copy(inputData, s.buffer.Bytes())
+
+	// Run command
+	cmd := exec.Command(soxPath, args...)
+	cmd.Stdin = bytes.NewReader(inputData)
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("sox conversion failed: %w\nstderr: %s", err, stderr.String())
 	}
 
 	return nil
 }
 
-func (s *Streamer) End() error {
-	return s.Stop()
-}
-
-// buildCommandArgs constructs the SoX command arguments for streaming
+// buildCommandArgs constructs SoX command arguments
 func (s *Streamer) buildCommandArgs() []string {
 	args := []string{}
 
@@ -173,17 +202,17 @@ func (s *Streamer) buildCommandArgs() []string {
 	args = append(args, s.Options.BuildGlobalArgs()...)
 
 	// Input format arguments
-	if !s.Input.Pipe {
-		s.Input.Pipe = true // Always use stdin
-	}
+	inputCopy := s.Input
+	inputCopy.Pipe = false
+	args = append(args, inputCopy.BuildArgs()...)
 
-	args = append(args, s.Input.BuildArgs()...)
-
-	// Input file (stdin)
+	// Input stdin
 	args = append(args, "-")
 
 	// Output format arguments
-	args = append(args, s.Output.BuildArgs()...)
+	outputCopy := s.Output
+	outputCopy.Pipe = false
+	args = append(args, outputCopy.BuildArgs()...)
 
 	// Effects
 	if effects := s.Options.buildEffectArgs(); len(effects) > 0 {

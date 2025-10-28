@@ -9,8 +9,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
-
-	. "github.com/thadeu/go-sox"
 )
 
 // StreamerTestSuite defines the test suite for Streamer

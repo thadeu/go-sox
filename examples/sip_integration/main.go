@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"time"
 
 	sox "github.com/thadeu/go-sox"
 )
@@ -21,7 +22,7 @@ func (t *TranscriptionAPI) Transcribe(audioData []byte) (string, error) {
 
 // RTPMediaHandler handles incoming RTP media and converts to FLAC for transcription
 type RTPMediaHandler struct {
-	stream           *sox.StreamConverter
+	stream           *sox.Streamer
 	transcriptionCh  chan []byte
 	maxBufferMs      int
 	accumulatedMs    int
@@ -41,7 +42,7 @@ func NewRTPMediaHandler(maxBufferMs, packetDurationMs int) *RTPMediaHandler {
 // Start initializes the RTP handler
 func (h *RTPMediaHandler) Start() error {
 	// Initialize SoX stream converter: PCM Raw 16kHz mono → FLAC
-	h.stream = sox.NewStreamConverter(sox.PCM_RAW_16K_MONO, sox.FLAC_16K_MONO)
+	h.stream = sox.NewStreamer(sox.PCM_RAW_8K_MONO, sox.FLAC_16K_MONO_LE)
 
 	// Configure for optimal performance
 	opts := sox.DefaultOptions()
@@ -49,7 +50,8 @@ func (h *RTPMediaHandler) Start() error {
 	opts.BufferSize = 64 * 1024
 	h.stream.WithOptions(opts)
 
-	return h.stream.Start()
+	h.stream.Start(3 * time.Second)
+	return nil
 }
 
 // HandleRTPPacket processes incoming RTP packet with PCM audio
@@ -68,25 +70,16 @@ func (h *RTPMediaHandler) HandleRTPPacket(pcmData []byte) error {
 	// Check if we've accumulated enough audio for transcription
 	if h.accumulatedMs >= h.maxBufferMs {
 		// Flush and get FLAC output
-		flacData, err := h.stream.Flush()
+		err := h.stream.End()
 		if err != nil {
 			return fmt.Errorf("failed to flush stream: %w", err)
 		}
 
 		// Send to transcription worker
 		select {
-		case h.transcriptionCh <- flacData:
 		default:
 			log.Println("Warning: transcription queue full, dropping packet")
 		}
-
-		// Reset stream for next batch
-		h.stream = sox.NewStreamConverter(sox.PCM_RAW_16K_MONO, sox.FLAC_16K_MONO)
-		opts := sox.DefaultOptions()
-		opts.CompressionLevel = 5
-		h.stream.WithOptions(opts)
-		h.stream.Start()
-		h.accumulatedMs = 0
 	}
 
 	return nil
@@ -112,14 +105,14 @@ func (h *RTPMediaHandler) Stop() error {
 
 	// Flush any remaining data
 	if h.accumulatedMs > 0 {
-		flacData, err := h.stream.Flush()
-		if err == nil && len(flacData) > 0 {
-			h.transcriptionCh <- flacData
+		err := h.stream.End()
+		if err != nil {
+			return fmt.Errorf("failed to flush stream: %w", err)
 		}
 	}
 
 	close(h.transcriptionCh)
-	return h.stream.Close()
+	return h.stream.End()
 }
 
 // simulateRTPStream simulates receiving RTP packets for demonstration

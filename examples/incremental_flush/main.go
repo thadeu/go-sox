@@ -27,13 +27,11 @@ func main() {
 
 	outputPath := filepath.Join(outputDir, "realtime.flac")
 
-	stream := sox.NewStreamConverter(sox.PCM_RAW_16K_MONO, sox.FLAC_16K_MONO).
-		WithOutputPath(outputPath).
-		WithAutoFlush(3 * time.Second) // Flush every 3 seconds
+	stream := sox.NewStreamer(sox.PCM_RAW_8K_MONO, sox.FLAC_16K_MONO_LE).
+		WithOutputPath(outputPath)
 
-	if err := stream.Start(); err != nil {
-		log.Fatalf("Failed to start stream: %v", err)
-	}
+	// Start with auto-flush every 3 seconds
+	stream.Start(3 * time.Second)
 
 	// Simulate RTP packet streaming
 	fmt.Println("Simulating RTP packet streaming...")
@@ -47,43 +45,35 @@ func main() {
 			continue
 		}
 
-		// Check file size periodically
-		if i%5 == 0 {
-			if fileInfo, err := os.Stat(outputPath); err == nil {
-				fmt.Printf("After %d packets: file size %d bytes\n", i+1, fileInfo.Size())
-			}
-		}
-
 		time.Sleep(100 * time.Millisecond) // Simulate packet interval
 	}
 
-	// Final flush
-	_, err := stream.Flush()
-	if err != nil {
+	// Final flush - stop the stream and flush remaining data
+	if err := stream.Stop(); err != nil {
 		log.Printf("Final flush error: %v", err)
 	}
 
-	// Check final file size
-	if fileInfo, err := os.Stat(outputPath); err == nil {
-		fmt.Printf("Final file size: %d bytes\n", fileInfo.Size())
+	// Check for incremental files created by auto-flush
+	fmt.Println("\n=== Checking incremental files ===")
+	files, _ := filepath.Glob(filepath.Join(outputDir, "realtime.flac.*"))
+	if len(files) > 0 {
+		fmt.Printf("Found %d incremental flush files:\n", len(files))
+		for _, file := range files {
+			if fileInfo, err := os.Stat(file); err == nil {
+				fmt.Printf("  - %s: %d bytes\n", filepath.Base(file), fileInfo.Size())
+			}
+		}
 	}
 
-	fmt.Println("\n=== Example 2: Error Handling ===")
-
-	// Example 2: WithAutoFlush without WithOutputPath should fail
-	invalidStream := sox.NewStreamConverter(sox.PCM_RAW_16K_MONO, sox.FLAC_16K_MONO).
-		WithAutoFlush(1 * time.Second) // No WithOutputPath
-
-	err = invalidStream.Start()
-	if err != nil {
-		fmt.Println("✓ Correctly failed: WithAutoFlush requires WithOutputPath")
-		fmt.Printf("  Error: %v\n", err)
+	// Check final file
+	if fileInfo, err := os.Stat(outputPath); err == nil {
+		fmt.Printf("Final file %s: %d bytes\n", filepath.Base(outputPath), fileInfo.Size())
 	}
 
 	fmt.Println("\n=== Summary ===")
-	fmt.Println("✓ Auto-flush: File grows during streaming, other processes can read it")
-	fmt.Println("✓ Requires WithOutputPath: Prevents confusion and ensures correct usage")
-	fmt.Println("✓ Perfect for real-time transcription pipelines")
+	fmt.Println("✓ Auto-flush: Creates incremental files during streaming")
+	fmt.Println("✓ Periodic flush: Saves data every N seconds without blocking writes")
+	fmt.Println("✓ Perfect for real-time processing pipelines")
 }
 
 // generateTestPCMData generates test PCM audio data

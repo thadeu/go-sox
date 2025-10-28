@@ -30,9 +30,9 @@ func main() {
 }
 
 func basicExample() {
-	pcmData := generatePCM(16000, 100) // 100ms audio
+	pcmData := generatePCM(8000, 100) // 100ms audio
 
-	converter := sox.NewConverter(sox.PCM_RAW_16K_MONO, sox.FLAC_16K_MONO)
+	converter := sox.NewConverter(sox.PCM_RAW_8K_MONO, sox.FLAC_16K_MONO_LE)
 
 	input := bytes.NewReader(pcmData)
 	output := &bytes.Buffer{}
@@ -46,10 +46,10 @@ func basicExample() {
 }
 
 func poolExample() {
-	pcmData := generatePCM(16000, 100)
+	pcmData := generatePCM(8000, 100)
 
 	// WithPool() creates default pool automatically (SOX_MAX_WORKERS)
-	converter := sox.NewConverter(sox.PCM_RAW_16K_MONO, sox.FLAC_16K_MONO).
+	converter := sox.NewConverter(sox.PCM_RAW_8K_MONO, sox.FLAC_16K_MONO_LE).
 		WithPool() // No need to create pool manually!
 
 	input := bytes.NewReader(pcmData)
@@ -65,7 +65,7 @@ func poolExample() {
 
 func fileExample() {
 	// ConvertFile also has automatic retry + circuit breaker
-	_ = sox.NewConverter(sox.PCM_RAW_16K_MONO, sox.WAV_16K_MONO).
+	_ = sox.NewConverter(sox.PCM_RAW_8K_MONO, sox.WAV_16K_MONO_LE).
 		WithPool()
 
 	// Note: This would fail because we don't have actual files
