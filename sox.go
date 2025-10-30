@@ -22,8 +22,26 @@ import (
 	"time"
 )
 
-// sox.Task
-// Task handles audio format conversion using SoX with built-in resiliency
+// Task handles audio format conversion using SoX with built-in resiliency.
+// It provides a unified API for one-shot conversions, real-time streaming,
+// and periodic batch processing.
+//
+// The Task includes production-ready features by default:
+//   - Circuit breaker pattern to prevent cascading failures
+//   - Automatic retry with exponential backoff
+//   - Context support for cancellation and timeouts
+//
+// Example:
+//
+//	// Simple conversion
+//	task := New(PCM_RAW_16K_MONO, FLAC_16K_MONO)
+//	err := task.Convert(inputReader, outputWriter)
+//
+//	// With options
+//	task := New(input, output).
+//		WithOptions(opts).
+//		WithRetryConfig(retryConfig)
+//	err := task.Convert(inputPath, outputPath)
 type Task struct {
 	Input          AudioFormat
 	Output         AudioFormat
@@ -58,7 +76,21 @@ type Task struct {
 	inputPath string
 }
 
-// New creates a new Task with input and output formats
+// New creates a new Task with input and output formats.
+// The Task is configured with production-ready defaults:
+//   - Circuit breaker (opens after 5 failures, resets after 10s)
+//   - Retry (3 attempts with exponential backoff)
+//   - Default SoX options
+//
+// Example:
+//
+//	task := New(PCM_RAW_16K_MONO, FLAC_16K_MONO)
+//	err := task.Convert(inputReader, outputWriter)
+//
+//	task := New(input, output).
+//		WithOptions(customOptions).
+//		WithCircuitBreaker(circuitBreaker)
+//	err := task.Convert(inputPath, outputPath)
 func New(input, output AudioFormat) *Task {
 	return &Task{
 		Input:          input,
@@ -72,6 +104,19 @@ func New(input, output AudioFormat) *Task {
 	}
 }
 
+// NewTicker creates a new Task configured for periodic batch processing.
+// The ticker mode buffers input data and converts it at the specified interval.
+//
+// Example:
+//
+//	task := NewTicker(PCM_RAW_8K_MONO, FLAC_16K_MONO, 3*time.Second).
+//		WithOutputPath("/tmp/output.flac")
+//	task.Start()
+//
+//	for packet := range rtpChannel {
+//		task.Write(packet.Payload)
+//	}
+//	task.Stop()
 func NewTicker(input AudioFormat, output AudioFormat, interval time.Duration) *Task {
 	conv := New(input, output)
 	conv.WithTicker(interval)
@@ -79,6 +124,22 @@ func NewTicker(input AudioFormat, output AudioFormat, interval time.Duration) *T
 	return conv
 }
 
+// NewStream creates a new Task configured for real-time streaming.
+// In streaming mode, Write() sends data to the SoX process and Read() receives
+// converted data. The SoX process remains alive during the stream.
+//
+// Example:
+//
+//	task := NewStream(PCM_RAW_8K_MONO, FLAC_16K_MONO).WithStream()
+//	task.Start()
+//
+//	for packet := range rtpChannel {
+//		task.Write(packet.Payload)
+//		// Read converted data if needed
+//		buf := make([]byte, 4096)
+//		task.Read(buf)
+//	}
+//	task.Stop()
 func NewStream(input AudioFormat, output AudioFormat) *Task {
 	conv := New(input, output)
 	conv.WithStream()
@@ -86,62 +147,159 @@ func NewStream(input AudioFormat, output AudioFormat) *Task {
 	return conv
 }
 
-// WithOptions sets custom conversion options
+// WithOptions sets custom conversion options for the Task.
+// Options include timeout, buffer size, compression level, effects, and more.
+//
+// Example:
+//
+//	opts := DefaultOptions()
+//	opts.Timeout = 30 * time.Second
+//	opts.CompressionLevel = 8
+//	task := New(input, output).WithOptions(opts)
 func (c *Task) WithOptions(opts ConversionOptions) *Task {
 	c.Options = opts
 	return c
 }
 
-// WithCircuitBreaker sets a custom circuit breaker
+// WithCircuitBreaker sets a custom circuit breaker for the Task.
+// By default, a circuit breaker is created with sensible defaults.
+// Override this for custom failure thresholds and reset timeouts.
+//
+// Example:
+//
+//	breaker := NewCircuitBreakerWithConfig(
+//		10,                 // maxFailures
+//		15*time.Second,     // resetTimeout
+//		5,                  // halfOpenRequests
+//	)
+//	task := New(input, output).WithCircuitBreaker(breaker)
 func (c *Task) WithCircuitBreaker(cb *CircuitBreaker) *Task {
 	c.circuitBreaker = cb
 	return c
 }
 
-// WithRetryConfig sets custom retry configuration
+// WithRetryConfig sets custom retry configuration for the Task.
+// By default, the Task uses DefaultRetryConfig() (3 attempts, exponential backoff).
+//
+// Example:
+//
+//	retryConfig := RetryConfig{
+//		MaxAttempts:     5,
+//		InitialBackoff:  200 * time.Millisecond,
+//		MaxBackoff:      10 * time.Second,
+//		BackoffMultiple: 2.0,
+//	}
+//	task := New(input, output).WithRetryConfig(retryConfig)
 func (c *Task) WithRetryConfig(config RetryConfig) *Task {
 	c.retryConfig = config
 	return c
 }
 
-// DisableResilience disables circuit breaker and retry (not recommended for production)
+// DisableResilience disables circuit breaker and retry mechanisms.
+// This reduces latency but removes protection against transient failures.
+// Not recommended for production use unless you handle resiliency externally.
+//
+// Example:
+//
+//	// For testing or non-critical conversions
+//	task := New(input, output).DisableResilience()
 func (c *Task) DisableResilience() *Task {
 	c.circuitBreaker = nil
 	c.retryConfig.MaxAttempts = 1
 	return c
 }
 
-// WithStream enables streaming mode for real-time data processing
-// In streaming mode, use Write() to send data and Read() to receive data
+// WithStream enables streaming mode for real-time data processing.
+// In streaming mode, the SoX process remains alive and accepts continuous writes.
+// Use Write() to send data and Read() to receive converted data.
+//
+// Example:
+//
+//	task := New(input, output).WithStream()
+//	task.Start()
+//	defer task.Stop()
+//
+//	for packet := range rtpChannel {
+//		task.Write(packet.Payload)
+//	}
 func (c *Task) WithStream() *Task {
 	c.streamMode = true
 	return c
 }
 
-// WithTicker enables periodic conversion with specified interval
-// Each interval, the buffered data will be converted and output
+// WithTicker enables periodic conversion with the specified interval.
+// Data written via Write() is buffered and converted at each tick.
+// Useful for batch processing of continuous streams (e.g., RTP recording).
+//
+// Example:
+//
+//	task := New(input, output).
+//		WithTicker(5*time.Second).
+//		WithOutputPath("/tmp/output.flac")
+//	task.Start()
+//
+//	for packet := range rtpChannel {
+//		task.Write(packet.Payload)
+//	}
+//	task.Stop() // Final flush
 func (c *Task) WithTicker(interval time.Duration) *Task {
 	c.tickerMode = true
 	c.tickerDuration = interval
 	return c
 }
 
+// WithOutputPath sets the output file path for conversions.
+// Used with ticker mode or stream mode to write directly to a file.
+//
+// Example:
+//
+//	task := New(input, output).
+//		WithOutputPath("/tmp/recording.flac").
+//		WithTicker(3*time.Second)
 func (s *Task) WithOutputPath(path string) *Task {
 	s.outputPath = path
 	return s
 }
 
+// WithStart starts the Task immediately after configuration.
+// Convenience method for chaining: New(...).WithStream().WithStart()
+//
+// Example:
+//
+//	task := New(input, output).
+//		WithStream().
+//		WithStart()
+//	defer task.Stop()
 func (s *Task) WithStart() *Task {
 	s.Start()
 
 	return s
 }
 
-// Convert performs conversion with flexible argument handling
-// Arguments can be:
-// - Convert(io.Reader, io.Writer) for streaming I/O
-// - Convert(string, string) for file paths
-// - Mixes of Reader/Writer and string paths are supported
+// Convert performs audio format conversion with flexible argument handling.
+// It automatically detects the input/output types and uses the most efficient method.
+//
+// Supported argument combinations:
+//   - Convert(io.Reader, io.Writer) - uses pipes for streaming I/O
+//   - Convert(string, string) - uses direct file paths (optimized, no pipes)
+//   - Convert(io.Reader, string) - reads from stream, writes to file
+//   - Convert(string, io.Writer) - reads from file, writes to stream
+//
+// The conversion respects Options.Timeout if set, otherwise uses context.Background().
+//
+// Example:
+//
+//	// Bytes to bytes
+//	task := New(PCM_RAW_8K_MONO, FLAC_16K_MONO)
+//	err := task.Convert(bytes.NewReader(pcmData), &outputBuffer)
+//
+//	// File to file (optimized path mode)
+//	err := task.Convert("input.pcm", "output.flac")
+//
+//	// With timeout via options
+//	task := New(input, output)
+//	task.Options.Timeout = 10 * time.Second
+//	err := task.Convert(inputReader, outputWriter)
 func (c *Task) Convert(args ...interface{}) error {
 	ctx := context.Background()
 	if c.Options.Timeout > 0 {
@@ -152,7 +310,25 @@ func (c *Task) Convert(args ...interface{}) error {
 	return c.ConvertWithContext(ctx, args...)
 }
 
-// ConvertWithContext performs conversion with context and flexible arguments
+// ConvertWithContext performs conversion with a context for cancellation and timeout.
+// The context is used for cancellation propagation and timeout enforcement.
+// This is the preferred method when you need explicit control over cancellation.
+//
+// Example:
+//
+//	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+//	defer cancel()
+//
+//	task := New(input, output)
+//	err := task.ConvertWithContext(ctx, inputReader, outputWriter)
+//
+//	// Cancellation example
+//	ctx, cancel := context.WithCancel(context.Background())
+//	go func() {
+//		time.Sleep(5 * time.Second)
+//		cancel() // Cancel conversion after 5 seconds
+//	}()
+//	err := task.ConvertWithContext(ctx, inputReader, outputWriter)
 func (c *Task) ConvertWithContext(ctx context.Context, args ...interface{}) error {
 	if len(args) < 2 {
 		return fmt.Errorf("convert requires at least 2 arguments (input and output)")
@@ -221,8 +397,22 @@ func (c *Task) ConvertWithContext(ctx context.Context, args ...interface{}) erro
 	return c.executeWithRetryStream(ctx, seekableInput, outputWriter)
 }
 
-// Write writes audio data to the Task
-// Only valid when using WithStream() mode
+// Write writes audio data to the Task.
+// Valid only when using WithStream() or WithTicker() mode.
+// For stream mode, data is sent directly to the SoX process stdin.
+// For ticker mode, data is buffered until the next tick interval.
+//
+// Example:
+//
+//	task := New(input, output).WithStream()
+//	task.Start()
+//	defer task.Stop()
+//
+//	for packet := range rtpChannel {
+//		if _, err := task.Write(packet.Payload); err != nil {
+//			return err
+//		}
+//	}
 func (c *Task) Write(data []byte) (int, error) {
 	if c.tickerMode {
 		c.tickerLock.Lock()
@@ -254,9 +444,27 @@ func (c *Task) Write(data []byte) (int, error) {
 	return c.streamStdin.Write(data)
 }
 
-// Read reads converted audio data from the Task
-// Only valid when using WithStream() mode
-// Creates a copy of the current buffer to avoid data loss
+// Read reads converted audio data from the Task.
+// Valid only when using WithStream() mode.
+// Reads from the SoX process stdout pipe.
+//
+// Example:
+//
+//	task := New(input, output).WithStream()
+//	task.Start()
+//	defer task.Stop()
+//
+//	buf := make([]byte, 4096)
+//	for {
+//		n, err := task.Read(buf)
+//		if err == io.EOF {
+//			break
+//		}
+//		if err != nil {
+//			return err
+//		}
+//		// Process buf[:n]
+//	}
 func (c *Task) Read(b []byte) (int, error) {
 	if !c.streamMode {
 		return 0, fmt.Errorf("read only available in stream mode")
@@ -272,9 +480,29 @@ func (c *Task) Read(b []byte) (int, error) {
 	return c.streamStdout.Read(b)
 }
 
-// Start initializes the streaming Task
-// For streaming mode, starts the sox process
-// For ticker mode, starts the periodic conversion loop
+// Start initializes the Task for streaming or ticker mode.
+// For streaming mode: starts the SoX process with stdin/stdout pipes.
+// For ticker mode: starts the periodic conversion ticker.
+//
+// Must be called before Write() or Read().
+//
+// Example:
+//
+//	// Stream mode
+//	task := New(input, output).WithStream()
+//	if err := task.Start(); err != nil {
+//		return err
+//	}
+//	defer task.Stop()
+//
+//	// Ticker mode
+//	task := New(input, output).
+//		WithTicker(3*time.Second).
+//		WithOutputPath("/tmp/output.flac")
+//	if err := task.Start(); err != nil {
+//		return err
+//	}
+//	defer task.Stop()
 func (c *Task) Start() error {
 	if c.tickerMode {
 		return c.runTicker()
@@ -413,9 +641,21 @@ func (c *Task) flushStreamBuffer() error {
 	return c.Convert(inputReader, c.outputPath)
 }
 
-// Stop stops the Task and closes resources
-// For streaming mode, closes the stdin pipe
-// For ticker mode, stops the ticker and flushes remaining data
+// Stop stops the Task and closes all resources.
+// For streaming mode: closes stdin pipe and waits for SoX process to finish.
+// For ticker mode: stops the ticker and performs final flush of buffered data.
+//
+// Always call Stop() to ensure proper cleanup, preferably with defer.
+//
+// Example:
+//
+//	task := New(input, output).WithStream()
+//	if err := task.Start(); err != nil {
+//		return err
+//	}
+//	defer task.Stop() // Ensures cleanup
+//
+//	// Use task...
 func (c *Task) Stop() error {
 	if c.tickerMode {
 		return c.stopTicker()
@@ -472,7 +712,8 @@ func (c *Task) stopTicker() error {
 	return c.flushTickerBuffer()
 }
 
-// Close is an alias for Stop for compatibility
+// Close is an alias for Stop(), provided for compatibility with io.Closer.
+// Prefer using Stop() explicitly for clarity.
 func (c *Task) Close() error {
 	return c.Stop()
 }
@@ -713,7 +954,20 @@ func (c *Task) buildCommandArgs() []string {
 	return args
 }
 
-// CheckSoxInstalled verifies that SoX is installed and accessible
+// CheckSoxInstalled verifies that SoX is installed and accessible.
+// If soxPath is empty, checks for "sox" in PATH.
+// Returns an error if SoX is not found or not executable.
+//
+// Example:
+//
+//	if err := CheckSoxInstalled(""); err != nil {
+//		log.Fatal("SoX not installed:", err)
+//	}
+//
+//	// Check custom path
+//	if err := CheckSoxInstalled("/usr/local/bin/sox"); err != nil {
+//		log.Fatal("SoX not found at custom path:", err)
+//	}
 func CheckSoxInstalled(soxPath string) error {
 	if soxPath == "" {
 		soxPath = "sox"

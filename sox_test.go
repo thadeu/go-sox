@@ -3,11 +3,13 @@ package sox
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -567,6 +569,225 @@ func (s *SoxTestSuite) TestCommandArgs_TickerModeRealWorld() {
 	// This command structure matches:
 	// sox -t raw -r 8000 -b 8 -c 1 -e mu-law --ignore-length - -t flac -r 16000 -b 16 -c 1 -C 0 --add-comment "PAPI rtp-recorder" output.flac
 	s.T().Logf("✓ Command structure verified for user's RTP recorder use case")
+}
+
+// TEST SUITE 6: Edge Cases and Error Handling
+// ═══════════════════════════════════════════════════════════
+
+// TestConverter_EmptyInput tests handling of empty input
+func (s *SoxTestSuite) TestConverter_EmptyInput() {
+	if err := CheckSoxInstalled(""); err != nil {
+		s.T().Skip("SoX not installed")
+	}
+
+	task := New(PCM_RAW_8K_MONO, FLAC_16K_MONO_LE)
+	inputReader := bytes.NewReader([]byte{})
+	outputBuffer := &bytes.Buffer{}
+
+	// Empty input handling - should not panic
+	// SoX may succeed or fail depending on format, but library should handle gracefully
+	err := task.Convert(inputReader, outputBuffer)
+	// Just verify it doesn't panic - SoX behavior varies
+	if err != nil {
+		s.T().Logf("Empty input conversion failed (expected): %v", err)
+	} else {
+		s.T().Logf("Empty input conversion succeeded (SoX allowed it)")
+	}
+	// Important: no panic occurred
+}
+
+// TestConverter_ContextCancellation tests proper cleanup on cancellation
+func (s *SoxTestSuite) TestConverter_ContextCancellation() {
+	if err := CheckSoxInstalled(""); err != nil {
+		s.T().Skip("SoX not installed")
+	}
+
+	pcmData := s.generatePCMData(8000, 1000) // 1 second
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	task := New(PCM_RAW_8K_MONO, FLAC_16K_MONO_LE)
+	inputReader := bytes.NewReader(pcmData)
+	outputBuffer := &bytes.Buffer{}
+
+	// Cancel context immediately
+	cancel()
+
+	err := task.ConvertWithContext(ctx, inputReader, outputBuffer)
+	assert.Error(s.T(), err, "Should fail when context is cancelled")
+	assert.Contains(s.T(), err.Error(), "cancelled", "Error should mention cancellation")
+}
+
+// TestConverter_ContextTimeout tests timeout handling
+func (s *SoxTestSuite) TestConverter_ContextTimeout() {
+	if err := CheckSoxInstalled(""); err != nil {
+		s.T().Skip("SoX not installed")
+	}
+
+	// Use very short timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
+	defer cancel()
+
+	// Wait a bit to ensure timeout expires
+	time.Sleep(10 * time.Millisecond)
+
+	pcmData := s.generatePCMData(8000, 1000)
+	task := New(PCM_RAW_8K_MONO, FLAC_16K_MONO_LE)
+	inputReader := bytes.NewReader(pcmData)
+	outputBuffer := &bytes.Buffer{}
+
+	err := task.ConvertWithContext(ctx, inputReader, outputBuffer)
+	assert.Error(s.T(), err, "Should fail on timeout")
+	assert.True(s.T(), errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled),
+		"Error should be context deadline exceeded or cancelled")
+}
+
+// TestConverter_OptionsTimeout tests timeout via Options
+func (s *SoxTestSuite) TestConverter_OptionsTimeout() {
+	if err := CheckSoxInstalled(""); err != nil {
+		s.T().Skip("SoX not installed")
+	}
+
+	opts := DefaultOptions()
+	opts.Timeout = 1 * time.Nanosecond // Very short timeout
+
+	// Wait to ensure timeout expires
+	time.Sleep(10 * time.Millisecond)
+
+	pcmData := s.generatePCMData(8000, 1000)
+	task := New(PCM_RAW_8K_MONO, FLAC_16K_MONO_LE).WithOptions(opts)
+	inputReader := bytes.NewReader(pcmData)
+	outputBuffer := &bytes.Buffer{}
+
+	err := task.Convert(inputReader, outputBuffer)
+	assert.Error(s.T(), err, "Should fail on timeout")
+}
+
+// TestStream_ConcurrentWrite tests concurrent writes to stream
+func (s *SoxTestSuite) TestStream_ConcurrentWrite() {
+	if err := CheckSoxInstalled(""); err != nil {
+		s.T().Skip("SoX not installed")
+	}
+
+	task := New(PCM_RAW_8K_MONO, FLAC_16K_MONO_LE).WithStream()
+	err := task.Start()
+	require.NoError(s.T(), err)
+	defer task.Stop()
+
+	// Concurrent writes
+	var wg sync.WaitGroup
+	errors := make(chan error, 10)
+
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			chunk := s.generatePCMData(8000, 10)
+			if _, err := task.Write(chunk); err != nil {
+				errors <- err
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errors)
+
+	// Check for errors
+	for err := range errors {
+		assert.NoError(s.T(), err, "Concurrent write should not fail")
+	}
+}
+
+// TestStream_DoubleStop tests calling Stop() multiple times
+func (s *SoxTestSuite) TestStream_DoubleStop() {
+	if err := CheckSoxInstalled(""); err != nil {
+		s.T().Skip("SoX not installed")
+	}
+
+	task := New(PCM_RAW_8K_MONO, FLAC_16K_MONO_LE).WithStream()
+	err := task.Start()
+	require.NoError(s.T(), err)
+
+	// First Stop should succeed
+	err = task.Stop()
+	assert.NoError(s.T(), err, "First Stop should succeed")
+
+	// Second Stop should be safe (idempotent)
+	err = task.Stop()
+	assert.NoError(s.T(), err, "Second Stop should be safe")
+}
+
+// TestTicker_EmptyBuffer tests ticker with empty buffer
+func (s *SoxTestSuite) TestTicker_EmptyBuffer() {
+	if err := CheckSoxInstalled(""); err != nil {
+		s.T().Skip("SoX not installed")
+	}
+
+	outputPath := filepath.Join(s.tmpDir, "empty_ticker.flac")
+
+	task := New(PCM_RAW_8K_MONO, FLAC_16K_MONO_LE).
+		WithOutputPath(outputPath).
+		WithTicker(1 * time.Second)
+
+	err := task.Start()
+	require.NoError(s.T(), err)
+
+	// Don't write anything, just wait for tick
+	time.Sleep(2 * time.Second)
+
+	// Stop should handle empty buffer gracefully
+	err = task.Stop()
+	assert.NoError(s.T(), err, "Stop with empty buffer should be safe")
+}
+
+// TestConverter_InvalidFormat tests handling of invalid format
+func (s *SoxTestSuite) TestConverter_InvalidFormat() {
+	invalidFormat := AudioFormat{
+		Type:       "invalid-format-type",
+		SampleRate: 16000,
+		Channels:   1,
+		BitDepth:   16,
+	}
+
+	task := New(invalidFormat, FLAC_16K_MONO_LE)
+	pcmData := s.generatePCMData(8000, 1000)
+	inputReader := bytes.NewReader(pcmData)
+	outputBuffer := &bytes.Buffer{}
+
+	err := task.Convert(inputReader, outputBuffer)
+	assert.Error(s.T(), err, "Should fail with invalid format")
+}
+
+// TestConverter_FileNotFound tests handling of non-existent input file
+func (s *SoxTestSuite) TestConverter_FileNotFound() {
+	if err := CheckSoxInstalled(""); err != nil {
+		s.T().Skip("SoX not installed")
+	}
+
+	task := New(PCM_RAW_8K_MONO, FLAC_16K_MONO_LE)
+	outputPath := filepath.Join(s.tmpDir, "output.flac")
+
+	err := task.Convert("/nonexistent/input.pcm", outputPath)
+	assert.Error(s.T(), err, "Should fail when input file doesn't exist")
+}
+
+// TestConverter_OutputDirectoryNotFound tests handling of non-existent output directory
+func (s *SoxTestSuite) TestConverter_OutputDirectoryNotFound() {
+	if err := CheckSoxInstalled(""); err != nil {
+		s.T().Skip("SoX not installed")
+	}
+
+	inputPath := filepath.Join(s.tmpDir, "input.pcm")
+	pcmData := s.generatePCMData(8000, 1000)
+	err := os.WriteFile(inputPath, pcmData, 0644)
+	require.NoError(s.T(), err)
+
+	task := New(PCM_RAW_8K_MONO, FLAC_16K_MONO_LE)
+	outputPath := "/nonexistent/directory/output.flac"
+
+	err = task.Convert(inputPath, outputPath)
+	assert.Error(s.T(), err, "Should fail when output directory doesn't exist")
 }
 
 // TestPathMode_FilesToFiles tests actual file-to-file path mode conversion

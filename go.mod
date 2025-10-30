@@ -1,3 +1,8 @@
+// Package go-sox provides a high-performance Go wrapper for SoX CLI
+// using pipes and streams for audio format conversion.
+//
+// Minimum Go version: 1.21
+// Requires SoX 14.4+ to be installed and accessible in PATH
 module github.com/thadeu/go-sox
 
 go 1.21

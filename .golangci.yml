@@ -1,0 +1,35 @@
+linters-settings:
+  errcheck:
+    check-type-assertions: true
+    check-blank: true
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - performance
+      - style
+  govet:
+    check-shadowing: true
+  gosec:
+    severity: medium
+    confidence: medium
+
+linters:
+  enable:
+    - errcheck
+    - gocritic
+    - govet
+    - gosec
+    - gofmt
+    - goimports
+    - misspell
+    - staticcheck
+    - unused
+    - ineffassign
+    - typecheck
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck
+
