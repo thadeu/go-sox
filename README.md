@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/go-sox-1.png" alt="go-sox" width="100%"> 
+  <img src="docs/images/go-sox-2.png" alt="go-sox" width="90%"> 
 </p>
 
 # go-sox
