@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/images/go-sox-1.png" alt="go-sox" width="100%"> 
+</p>
+
 # go-sox
 
 ![Build Status](https://github.com/thadeu/go-sox/actions/workflows/go-test.yml/badge.svg)
