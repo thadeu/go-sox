@@ -551,11 +551,30 @@ func (c *Task) Start() error {
 	c.streamCmd = cmd
 
 	// Start goroutine to continuously read stdout
-	// This prevents the sox process from blocking when stdout buffer is full
-	go func() {
-		_, err := io.Copy(c.streamOutput, stdout)
-		c.streamOutputDone <- err
-	}()
+	// For RAW format with outputPath in stream mode, write to file in append mode
+	// Otherwise, buffer output in memory
+	if c.outputPath != "" && c.Output.Type == TYPE_RAW {
+		// Stream mode with outputPath and RAW format: read from stdout and append to file
+		// RAW format doesn't have headers, so we can safely append chunks
+		go func() {
+			file, err := os.OpenFile(c.outputPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+			if err != nil {
+				c.streamOutputDone <- fmt.Errorf("failed to open output file: %w", err)
+				return
+			}
+			defer file.Close()
+
+			_, err = io.Copy(file, stdout)
+			c.streamOutputDone <- err
+		}()
+	} else {
+		// No outputPath or non-RAW format: buffer output in memory
+		// Formats with headers (FLAC, WAV) are written directly by sox to the file
+		go func() {
+			_, err := io.Copy(c.streamOutput, stdout)
+			c.streamOutputDone <- err
+		}()
+	}
 
 	return nil
 }
@@ -939,9 +958,13 @@ func (c *Task) buildCommandArgs() []string {
 
 		args = append(args, c.Output.BuildArgs()...)
 
-		// Output destination for ticker mode with file output
-		if c.outputPath != "" {
-			args = append(args, c.outputPath)
+		// For stream mode with outputPath and RAW format, use stdout pipe for incremental append
+		// For other formats (FLAC, WAV, etc.) with headers, sox writes directly to file
+		// For ticker mode with outputPath, write directly to file
+		if c.outputPath != "" && c.streamMode && c.Output.Type != TYPE_FLAC && c.Output.Type != TYPE_WAV {
+			args = append(args, "-") // stdout - we'll handle file writing in Go with append
+		} else if c.outputPath != "" {
+			args = append(args, c.outputPath) // direct file output (required for formats with headers)
 		} else {
 			args = append(args, "-") // stdout
 		}
