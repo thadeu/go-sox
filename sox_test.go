@@ -992,13 +992,6 @@ func (s *SoxTestSuite) TestConvert_AutoDetect_MP3() {
 		s.T().Skip("SoX not installed")
 	}
 
-	// Check if SoX supports MP3 (requires libsox-fmt-mp3)
-	cmd := exec.Command("sox", "--version")
-	output, err := cmd.Output()
-	if err != nil || !strings.Contains(string(output), "libsox") {
-		s.T().Skip("SoX MP3 support not verified, skipping")
-	}
-
 	// First, create an MP3 file from PCM (if supported)
 	inputPath := filepath.Join(s.tmpDir, "input.pcm")
 	mp3Path := filepath.Join(s.tmpDir, "test.mp3")
@@ -1006,7 +999,7 @@ func (s *SoxTestSuite) TestConvert_AutoDetect_MP3() {
 
 	// Create input PCM file
 	pcmData := s.generatePCMData(8000, 1000)
-	err = os.WriteFile(inputPath, pcmData, 0644)
+	err := os.WriteFile(inputPath, pcmData, 0644)
 	require.NoError(s.T(), err)
 
 	// Try to convert PCM to MP3 first (may fail if MP3 not supported)
