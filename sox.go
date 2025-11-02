@@ -91,10 +91,29 @@ type Task struct {
 //		WithOptions(customOptions).
 //		WithCircuitBreaker(circuitBreaker)
 //	err := task.Convert(inputPath, outputPath)
-func New(input, output AudioFormat) *Task {
+func New(args ...interface{}) *Task {
+	var input *AudioFormat
+	var output *AudioFormat
+
+	input = &PCM_RAW_8K_MONO
+	output = &PCM_RAW_8K_MONO
+
+	if len(args) == 1 {
+		if ptr := toAudioFormatPtr(args[0]); ptr != nil {
+			output = ptr
+		}
+	} else if len(args) == 2 {
+		if ptr := toAudioFormatPtr(args[0]); ptr != nil {
+			input = ptr
+		}
+		if ptr := toAudioFormatPtr(args[1]); ptr != nil {
+			output = ptr
+		}
+	}
+
 	return &Task{
-		Input:          input,
-		Output:         output,
+		Input:          *input,
+		Output:         *output,
 		Options:        DefaultOptions(),
 		circuitBreaker: NewCircuitBreaker(),
 		retryConfig:    DefaultRetryConfig(),
@@ -102,6 +121,40 @@ func New(input, output AudioFormat) *Task {
 		tickerBuffer:   &bytes.Buffer{},
 		tickerStop:     make(chan struct{}),
 	}
+}
+
+// Convert performs a one-time audio conversion without needing to instantiate sox.New.
+// It automatically detects the input format:
+//   - wav, flac, and mp3: auto-detected by sox (no -t flag needed)
+//   - Other formats: defaults to raw type (-t raw)
+//
+// The output format is specified via the options parameter.
+//
+// Example:
+//
+//	wavBuffer := &bytes.Buffer{}
+//	err := sox.Convert(pcmPath, wavBuffer, sox.Options{
+//		Type:       "wav",
+//		Encoding:   "signed-integer",
+//		Endian:     "little",
+//		SampleRate: 16000,
+//		BitDepth:   16,
+//		Channels:   1,
+//		Compression: 1.0,
+//		IgnoreLength: false,
+//		CustomArgs: []string{"--add-comment", "Custom metadata", "--norm"},
+//	})
+//
+//	// Convert from wav file (auto-detected) to flac
+//	err := sox.Convert("input.wav", "output.flac", sox.Options{
+//		Type: "flac",
+//	})
+func Convert(input interface{}, output interface{}, options Options) error {
+	// Create task with detected input format and provided output format
+	task := New(toFormatType(input), &options)
+
+	// Perform conversion
+	return task.Convert(input, output)
 }
 
 // NewTicker creates a new Task configured for periodic batch processing.

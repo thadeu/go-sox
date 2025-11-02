@@ -1,6 +1,10 @@
 package sox
 
-import "fmt"
+import (
+	"fmt"
+	"path/filepath"
+	"strings"
+)
 
 const (
 	TYPE_RAW            = "raw"
@@ -225,4 +229,53 @@ func (f *AudioFormat) Validate() error {
 	}
 
 	return nil
+}
+
+// toAudioFormatPtr converts an interface{} to *AudioFormat, accepting both values and pointers
+func toAudioFormatPtr(v interface{}) *AudioFormat {
+	switch val := v.(type) {
+	case AudioFormat:
+		return &val
+	case *AudioFormat:
+		return val
+	default:
+		return nil
+	}
+}
+
+// detectInputFormat detects the input format based on the input type.
+// For file paths: detects by extension (wav/flac/mp3 auto-detected, others default to raw).
+// For io.Reader: defaults to raw format.
+func toFormatType(input interface{}) *AudioFormat {
+	inputFormat := &AudioFormat{Type: TYPE_RAW}
+
+	// If input is a string (file path), try to detect by extension
+	if inputPath, ok := input.(string); ok {
+		ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(inputPath)), ".")
+		// For other extensions, try to map them
+		switch ext {
+		case "wav", "flac", "mp3":
+			inputFormat.Type = ext
+		case "ogg":
+			inputFormat.Type = TYPE_OGG
+		case "m4a":
+			inputFormat.Type = TYPE_M4A
+		case "aac":
+			inputFormat.Type = TYPE_AAC
+		case "ac3":
+			inputFormat.Type = TYPE_AC3
+		case "eac3":
+			inputFormat.Type = TYPE_EAC3
+		case "alaw", "al":
+			inputFormat.Type = TYPE_ALAW
+		case "pcm", "raw", "sln":
+			// Common raw audio file extensions
+			inputFormat.Type = TYPE_RAW
+		default:
+			// Default to raw for unknown extensions
+			inputFormat.Type = TYPE_RAW
+		}
+	}
+
+	return inputFormat
 }
