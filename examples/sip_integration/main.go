@@ -22,7 +22,7 @@ func (t *TranscriptionAPI) Transcribe(audioData []byte) (string, error) {
 
 // RTPMediaHandler handles incoming RTP media and converts to FLAC for transcription
 type RTPMediaHandler struct {
-	stream           *sox.Converter
+	stream           *sox.Task
 	transcriptionCh  chan []byte
 	maxBufferMs      int
 	accumulatedMs    int
