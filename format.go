@@ -61,6 +61,8 @@ type AudioFormat struct {
 	CustomArgs []string
 }
 
+type Options = AudioFormat
+
 // Common audio format presets for convenience
 
 var (
